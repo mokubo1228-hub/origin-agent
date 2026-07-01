@@ -1,0 +1,24 @@
+# Rust
+/target/
+
+# agent
+/ai-cli-research/
+
+# obsidian
+/.obsidian/
+
+# macOS
+.DS_Store
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Local runtime data
+/.origin/
+/sessions/
+
+# Editor
+.vscode/
+.idea/

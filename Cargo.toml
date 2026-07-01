@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "crates/origin-cli",
+    "crates/origin-config",
+    "crates/origin-provider",
+    "crates/origin-protocol",
+    "crates/origin-session",
+    "crates/origin-tools",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = ""
+rust-version = "1.75"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,15 @@
+# LM Studio + OpenAI config example.
+# Copy to ~/.origin/config.toml or point ORIGIN_CONFIG at this file.
+# Do not put API key values in this file.
+
+default_provider = "lmstudio"
+default_model = "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
+
+[providers.lmstudio]
+base_url = "http://localhost:1234/v1"
+default_model = "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+default_model = "zai-org-glm-5-1"

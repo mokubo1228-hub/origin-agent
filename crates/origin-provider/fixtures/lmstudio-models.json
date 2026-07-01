@@ -1,0 +1,17 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "qwen2.5-coder-7b-instruct",
+      "object": "model",
+      "created": 1710000000,
+      "owned_by": "lmstudio"
+    },
+    {
+      "id": "deepseek-coder-v2-lite-instruct",
+      "object": "model",
+      "created": 1710000001,
+      "owned_by": "lmstudio"
+    }
+  ]
+}

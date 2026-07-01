@@ -1,0 +1,15 @@
+[package]
+name = "origin-session"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+origin-protocol = { path = "../origin-protocol" }
+rand = "0.9"
+ring = "0.17"
+serde_json = "1"
+
+[lints]
+workspace = true
