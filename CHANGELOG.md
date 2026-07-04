@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.4.0 - 2026-07-05
 
 - The TUI and CLI no longer silently auto-select a discovered model at startup. When no model is set via CLI, env, or config, the TUI landing replaces the start hint with an explicit `No model selected — press /model to choose` prompt (or, when the provider endpoint is unreachable, a hint to set the provider first) and blocks sending until a model is chosen. The layout is otherwise unchanged and no picker is auto-overlaid. A model set via config is used as-is with no gate.
 - The `/model` route picker highlights the discovered fallback candidate as recommended, so it can be accepted with a single `Enter`. Model selection stays session-local and never writes `~/.origin/config.toml`.

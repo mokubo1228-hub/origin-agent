@@ -11,7 +11,7 @@ aider 的なモデル/プロバイダの自由度と、Codex / Gemini CLI のよ
 
 ![origin-agent 起動画面](docs/assets/landing.png)
 
-> **最新リリース: v1.3.0** · 履歴は [`CHANGELOG.md`](CHANGELOG.md)。
+> **最新リリース: v1.4.0** · 履歴は [`CHANGELOG.md`](CHANGELOG.md)。
 > Claude Code / Codex の置き換えではない — 広範・高速・多ファイルの実装はそちらが適任。
 > `origin-agent` は、自分で選んだモデルとプロバイダで「ファイル単位・人間承認つき」に
 > 編集するための、小さく制御可能な選択肢。
