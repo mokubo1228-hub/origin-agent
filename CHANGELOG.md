@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The TUI and CLI no longer silently auto-select a discovered model at startup. When no model is set via CLI, env, or config, the TUI landing replaces the start hint with an explicit `No model selected — press /model to choose` prompt (or, when the provider endpoint is unreachable, a hint to set the provider first) and blocks sending until a model is chosen. The layout is otherwise unchanged and no picker is auto-overlaid. A model set via config is used as-is with no gate.
+- The `/model` route picker highlights the discovered fallback candidate as recommended, so it can be accepted with a single `Enter`. Model selection stays session-local and never writes `~/.origin/config.toml`.
+- Non-interactive `origin chat` / `origin propose` still run when no model is set, printing `using <model> (auto-selected; pass --model or set default_model to pin)` to stderr; an unreachable endpoint or no candidate model reports a clear error instead of a silent pick.
+- The sample model id used across tests, examples, and docs was neutralized to `qwen2.5-7b-instruct`.
 - TUI Ask and Agent read-only provider context now includes `<cwd>/ORIGIN.md` as read-only workspace instructions when that file exists and passes validation. The file is loaded once at TUI startup, cached for the session, and shown in `/status` as loaded, skipped, or none.
 - ORIGIN.md transcript handling records metadata only (`ORIGIN.md`, bytes, SHA-256, loaded/skipped status, and skip reason) and never saves the instruction body. Absent `ORIGIN.md` remains silent and writes no transcript event.
 - Safety and approval behavior is unchanged: ORIGIN.md cannot trigger commands, routing changes, proposal generation, writes, auto-apply, or approval bypass.
