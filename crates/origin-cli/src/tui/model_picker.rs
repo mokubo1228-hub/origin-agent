@@ -164,12 +164,15 @@ fn model_route_picker_lines_with_ranges(
 /// route の補助情報(source・availability・current か)を dim の1行に整形する。
 fn model_route_metadata_line(route: &ModelRouteEntry, width: u16) -> Line<'static> {
     let metadata_width = (width.max(24) as usize).saturating_sub(4).max(12);
-    let metadata = format!(
-        "{} · {} · current: {}",
-        route.source,
-        route.availability,
+    let mut parts = vec![route.source.to_string(), route.availability.clone()];
+    if route.recommended {
+        parts.push("recommended".to_string());
+    }
+    parts.push(format!(
+        "current: {}",
         if route.current { "yes" } else { "no" }
-    );
+    ));
+    let metadata = parts.join(" · ");
     Line::from(vec![
         Span::raw("    "),
         Span::styled(

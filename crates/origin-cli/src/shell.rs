@@ -1778,7 +1778,7 @@ mod tests {
                 "20260506-112745-93b507",
                 "chat",
                 "lmstudio",
-                "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive",
+                "qwen2.5-7b-instruct",
                 "success",
             ),
             test_session_summary(

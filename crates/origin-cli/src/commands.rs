@@ -464,6 +464,7 @@ fn chat(args: Args, session: &mut SessionWriter) -> Result<(), String> {
         },
     )?;
     let model = resolve_model(args.model, config.default_model, &provider)?;
+    print_auto_selected_model_notice(&model);
     record_session_event(
         session,
         SessionEvent::ModelResolved {
@@ -554,6 +555,7 @@ fn propose(args: Args, session: &mut SessionWriter) -> Result<(), String> {
         },
     )?;
     let model = resolve_model(args.model, config.default_model, &provider)?;
+    print_auto_selected_model_notice(&model);
     record_session_event(
         session,
         SessionEvent::ModelResolved {
@@ -1375,7 +1377,7 @@ Current scope:
   - multiline composer
   - q or Ctrl+C to quit
 
-The TUI does not call provider APIs until you send a prompt.
+If no model is configured, the TUI surfaces a no-model state and waits for /model.
 Secret values are never displayed.
 ";
 
@@ -1410,7 +1412,7 @@ Usage:
   origin model list [--provider <id>] [--base-url <url>]
 
 Shows the selected model using the normal resolution order, or lists provider models.
-Model priority: --model, ORIGIN_MODEL, config default_model, provider fallback.
+Model priority: --model, ORIGIN_MODEL, config default_model, provider fallback for non-interactive commands.
 ";
 
 const MODELS_HELP: &str = "\
@@ -1418,7 +1420,7 @@ Usage:
   origin models [--provider <id>] [--base-url <url>]
 
 Lists models from the selected OpenAI-compatible provider.
-fallback_candidate shows whether origin may auto-select that model when no model is configured.
+fallback_candidate shows whether non-interactive commands may auto-select that model when no model is configured.
 ";
 
 const CHAT_HELP: &str = "\
@@ -1427,7 +1429,8 @@ Usage:
 
 Sends one prompt to /v1/chat/completions and prints the response.
 --resume adds a summarized previous session as background context only.
-Model priority: --model, ORIGIN_MODEL, config default_model, provider fallback.
+Model priority: --model, ORIGIN_MODEL, config default_model, provider fallback for non-interactive commands.
+If provider fallback is used, origin prints an auto-selected model notice to stderr.
 ";
 
 const PROPOSE_HELP: &str = "\
@@ -1880,6 +1883,24 @@ fn select_provider_fallback_model(
         })
 }
 
+fn print_auto_selected_model_notice(model: &ResolvedModel) {
+    if let Some(notice) = auto_selected_model_notice(model) {
+        eprintln!("{notice}");
+    }
+}
+
+fn auto_selected_model_notice(model: &ResolvedModel) -> Option<String> {
+    if model.source == ModelResolutionSource::Fallback {
+        Some(auto_selected_model_notice_text(&model.id))
+    } else {
+        None
+    }
+}
+
+fn auto_selected_model_notice_text(model_id: &str) -> String {
+    format!("using {model_id} (auto-selected; pass --model or set default_model to pin)")
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct ResolvedModel {
     id: String,
@@ -1980,7 +2001,8 @@ fn openai_provider(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_check_with_optional_retry, build_diff_prompt, build_existing_file_body_prompt,
+        apply_check_with_optional_retry, auto_selected_model_notice,
+        auto_selected_model_notice_text, build_diff_prompt, build_existing_file_body_prompt,
         build_new_file_body_prompt, construct_existing_file_unified_diff,
         construct_new_file_unified_diff, extract_existing_file_body_response,
         extract_new_file_body_response, fallback_candidate_label, format_status_output, help_text,
@@ -1988,7 +2010,7 @@ mod tests {
         request_and_validate_diff_proposal, resolve_model_from_inputs, validate_diff_integrity,
         validate_diff_targets_allowing_new_files, validate_propose_options, validate_proposed_diff,
         DiffProposal, DiffRetryFeedback, HelpTopic, ModelInfo, ModelResolutionSource, ProviderAuth,
-        ReadFile, ResumeContext, SessionWriter, StatusOutput,
+        ReadFile, ResolvedModel, ResumeContext, SessionWriter, StatusOutput,
     };
     use origin_tools::changed_files_from_diff;
     use std::fs;
@@ -2211,6 +2233,42 @@ mod tests {
 
         assert_eq!(resolved.id, "provider-fallback-model");
         assert_eq!(resolved.source, ModelResolutionSource::Fallback);
+    }
+
+    #[test]
+    fn auto_selected_notice_text_matches_noninteractive_spec() {
+        assert_eq!(
+            auto_selected_model_notice_text("provider-fallback-model"),
+            "using provider-fallback-model (auto-selected; pass --model or set default_model to pin)"
+        );
+    }
+
+    #[test]
+    fn auto_selected_notice_is_only_emitted_for_provider_fallback_source() {
+        let fallback = ResolvedModel {
+            id: "provider-fallback-model".to_string(),
+            source: ModelResolutionSource::Fallback,
+        };
+
+        assert_eq!(
+            auto_selected_model_notice(&fallback).as_deref(),
+            Some(
+                "using provider-fallback-model (auto-selected; pass --model or set default_model to pin)"
+            )
+        );
+
+        for source in [
+            ModelResolutionSource::Cli,
+            ModelResolutionSource::Env,
+            ModelResolutionSource::Config,
+        ] {
+            let resolved = ResolvedModel {
+                id: "explicit-model".to_string(),
+                source,
+            };
+
+            assert_eq!(auto_selected_model_notice(&resolved), None);
+        }
     }
 
     #[test]

@@ -35,7 +35,7 @@ use super::{
     has_workspace_overview_intent, header_height, header_lines, insert_tui_newline,
     interaction_lines, interaction_pane_height, interrupt_agent_generation,
     is_terminal_control_fragment, model_route_entries_from_providers, model_route_picker_lines,
-    model_route_picker_visible_lines, move_model_route_picker_selection,
+    model_route_picker_visible_lines, model_unavailable_hint, move_model_route_picker_selection,
     move_slash_suggestion_selection, open_model_route_picker_with_routes,
     parse_agent_planner_action, parse_model_route_argument, pending_indicator_line,
     poll_tui_agent_plan_worker, poll_tui_agent_propose_worker, poll_tui_chat_worker,
@@ -51,9 +51,9 @@ use super::{
     PendingAgentNewFilePlan, TuiActiveConversationContext, TuiAgentGeneration,
     TuiAgentPlanInFlight, TuiAgentPlanWorkerResult, TuiAgentProposeInFlight,
     TuiAgentProposeWorkerResult, TuiChatInFlight, TuiChatSubmit, TuiChatWorkerResult, TuiCommand,
-    TuiInteractionMode, TuiMessage, TuiPreviewKind, TuiProposalApplyStatus, TuiProposalReview,
-    TuiProposalReviewMode, TuiProposalReviewOrigin, TuiResultKind, TuiState, TuiSubmit,
-    ACTIVE_CONTEXT_MAX_CHARS, ACTIVE_CONTEXT_MAX_EVENTS, CHAT_NEWER_INDICATOR,
+    TuiInteractionMode, TuiMessage, TuiModelSelectionState, TuiPreviewKind, TuiProposalApplyStatus,
+    TuiProposalReview, TuiProposalReviewMode, TuiProposalReviewOrigin, TuiResultKind, TuiState,
+    TuiSubmit, ACTIVE_CONTEXT_MAX_CHARS, ACTIVE_CONTEXT_MAX_EVENTS, CHAT_NEWER_INDICATOR,
     CHAT_OLDER_INDICATOR, KEYBOARD_SCROLL_ROWS, PROMPT_CONTINUATION_PREFIX,
     WORKSPACE_OVERVIEW_MAX_ENTRIES,
 };
@@ -333,6 +333,7 @@ fn test_model_route(provider_id: &str, model_id: &str, current: bool) -> ModelRo
         model_id: model_id.to_string(),
         route: format!("{provider_id}/{model_id}"),
         current,
+        recommended: false,
         route_label: if provider_id == "openai" {
             "external/API"
         } else {
@@ -350,6 +351,7 @@ fn test_unavailable_provider_route(provider_id: &str, reason: &str) -> ModelRout
         model_id: String::new(),
         route: provider_id.to_string(),
         current: false,
+        recommended: false,
         route_label: if provider_id == "openai" {
             "external/API"
         } else {
@@ -367,6 +369,7 @@ fn test_provider_model(model_id: &str, source: &'static str) -> ModelRouteProvid
         source,
         availability: "available".to_string(),
         selectable: true,
+        recommended: false,
     }
 }
 
@@ -1351,7 +1354,7 @@ fn composer_affordance_switches_to_plan_select_owner() {
 #[test]
 fn startup_landing_omits_status_and_secret_terms() {
     let status = test_status();
-    let output = empty_state_lines(40)
+    let output = empty_state_lines(40, &TuiModelSelectionState::Selected)
         .into_iter()
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
@@ -1371,8 +1374,71 @@ fn startup_landing_omits_status_and_secret_terms() {
 }
 
 #[test]
+fn startup_landing_shows_no_model_selected_guidance() {
+    let output = empty_state_lines(40, &TuiModelSelectionState::NotSelected)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(output.contains("origin-agent — local-first AI workbench"));
+    assert!(output.contains("No model selected — press /model to choose."));
+    assert!(!output.contains("Type a message to start."));
+}
+
+#[test]
+fn startup_landing_shows_lmstudio_unavailable_hint_and_redacts_error() {
+    let output = empty_state_lines(
+        40,
+        &TuiModelSelectionState::Unavailable {
+            provider_id: "lmstudio".to_string(),
+            error: "request failed: Authorization: Bearer sk-test-secret".to_string(),
+        },
+    )
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
+
+    assert!(output.contains(model_unavailable_hint("lmstudio")));
+    assert!(output.contains("[redacted]"));
+    assert!(!output.contains("sk-test-secret"));
+    assert!(!output.contains("Authorization"));
+    assert!(!output.contains("Bearer sk-test-secret"));
+}
+
+#[test]
+fn startup_landing_shows_generic_provider_unavailable_hint() {
+    let output = empty_state_lines(
+        40,
+        &TuiModelSelectionState::Unavailable {
+            provider_id: "openai-compatible".to_string(),
+            error: "provider unavailable".to_string(),
+        },
+    )
+    .into_iter()
+    .map(|line| line.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
+
+    assert!(output.contains(model_unavailable_hint("openai-compatible")));
+    assert!(output.contains("base_url and api_key_env"));
+    assert!(output.contains("provider unavailable"));
+}
+
+#[test]
+fn model_unavailable_hint_distinguishes_lmstudio_from_other_providers() {
+    assert!(model_unavailable_hint("lmstudio").contains("LM Studio"));
+    assert!(model_unavailable_hint("openai").contains("base_url and api_key_env"));
+    assert_ne!(
+        model_unavailable_hint("lmstudio"),
+        model_unavailable_hint("openai")
+    );
+}
+
+#[test]
 fn empty_state_renders_as_neutral_guidance_not_action_log() {
-    let output = empty_state_lines(40)
+    let output = empty_state_lines(40, &TuiModelSelectionState::Selected)
         .into_iter()
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
@@ -1396,7 +1462,7 @@ fn empty_state_renders_as_neutral_guidance_not_action_log() {
 
 #[test]
 fn empty_state_renders_mascot_on_tall_pane() {
-    let lines = empty_state_lines(40);
+    let lines = empty_state_lines(40, &TuiModelSelectionState::Selected);
     let output = lines
         .iter()
         .map(|line| line.to_string())
@@ -1415,7 +1481,7 @@ fn empty_state_renders_mascot_on_tall_pane() {
 
 #[test]
 fn empty_state_drops_mascot_on_short_pane() {
-    let output = empty_state_lines(6)
+    let output = empty_state_lines(6, &TuiModelSelectionState::Selected)
         .into_iter()
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
@@ -1429,7 +1495,8 @@ fn empty_state_drops_mascot_on_short_pane() {
 #[test]
 fn status_lines_truncate_long_model_names() {
     let mut status = test_status();
-    status.model_id = Some("qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive-extra-long".to_string());
+    status.model_id =
+        Some("qwen2.5-7b-instruct-extra-long-model-name-for-header-truncation".to_string());
 
     let rendered = header_lines(&status, false, TuiInteractionMode::Ask)
         .into_iter()
@@ -1437,9 +1504,25 @@ fn status_lines_truncate_long_model_names() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(rendered.contains("qwen3.5-35b-a3b"));
+    assert!(rendered.contains("qwen2.5-7b-in"));
     assert!(rendered.contains("..."));
-    assert!(!rendered.contains("qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive-extra-long"));
+    assert!(!rendered.contains("qwen2.5-7b-instruct-extra-long-model-name-for-header-truncation"));
+}
+
+#[test]
+fn status_lines_show_no_model_guidance_when_model_is_unset() {
+    let mut status = test_status();
+    status.model_id = None;
+    status.model_source = "not-selected".to_string();
+
+    let rendered = header_lines(&status, false, TuiInteractionMode::Ask)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(rendered.contains("model: (none) — /model"));
+    assert!(!rendered.contains("unresolved"));
 }
 
 #[test]
@@ -2287,6 +2370,47 @@ fn empty_input_is_ignored() {
     assert_eq!(prepare_tui_submit(&mut state), None);
     assert!(state.messages.is_empty());
     assert!(!state.loading);
+}
+
+#[test]
+fn enter_blocks_chat_when_no_model_is_selected_without_clearing_draft() {
+    let mut state = test_state("hello");
+    state.runtime.model_id = None;
+    state.runtime.model_source = "not-selected".to_string();
+    state.runtime.model_error = None;
+
+    assert_eq!(prepare_tui_submit(&mut state), None);
+
+    assert_eq!(state.input, "hello");
+    assert!(!state.loading);
+    assert!(state.messages.iter().any(|message| {
+        matches!(message, TuiMessage::Error(text) if text.contains("Message not sent") && text.contains("/model"))
+    }));
+}
+
+#[test]
+fn enter_blocks_chat_when_provider_endpoint_is_unavailable() {
+    let mut state = test_state("hello");
+    state.runtime.model_id = None;
+    state.runtime.model_source = "unavailable".to_string();
+    state.runtime.model_error = Some("local server not reachable".to_string());
+
+    assert_eq!(prepare_tui_submit(&mut state), None);
+
+    assert_eq!(state.input, "hello");
+    assert!(!state.loading);
+    let output = state
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            TuiMessage::Error(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(output.contains("Message not sent"));
+    assert!(output.contains("no provider endpoint is reachable"));
+    assert!(output.contains("local server not reachable"));
 }
 
 #[test]
@@ -5753,19 +5877,45 @@ fn model_route_picker_rendering_is_block_based_and_marks_selection() {
 }
 
 #[test]
+fn model_route_picker_selects_recommended_route_when_no_current_model() {
+    let mut state = test_state("");
+    state.runtime.model_id = None;
+    let embedding = test_provider_model("text-embedding-3-large", "live");
+    let mut recommended = test_provider_model("qwen2.5-7b-instruct", "live");
+    recommended.recommended = true;
+    let routes = model_route_entries_from_providers(
+        &state.runtime,
+        &[test_provider_models(
+            "lmstudio",
+            vec![embedding, recommended],
+        )],
+    );
+
+    assert_eq!(routes[0].model_id, "qwen2.5-7b-instruct");
+    assert!(routes[0].recommended);
+    open_model_route_picker_with_routes(&mut state, routes);
+
+    let picker = state.model_route_picker.as_ref().expect("picker");
+    assert_eq!(picker.selected, 0);
+    assert_eq!(
+        picker.routes[picker.selected].model_id,
+        "qwen2.5-7b-instruct"
+    );
+
+    let output = format_tui_model_routes(&picker.routes, picker.selected, 80);
+    assert!(output.contains("live · available · recommended · current: no"));
+}
+
+#[test]
 fn model_route_picker_narrow_width_remains_readable() {
-    let routes = vec![test_model_route(
-        "lmstudio",
-        "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive",
-        true,
-    )];
+    let routes = vec![test_model_route("lmstudio", "qwen2.5-7b-instruct", true)];
     let output = model_route_picker_lines(&routes, 0, 32)
         .into_iter()
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(output.contains("1. lmstudio/qwen3.5"));
+    assert!(output.contains("1. lmstudio/qwen2.5"));
     assert!(output.contains("..."));
     assert!(output.contains("LM Studio — local/private"));
     assert!(output.contains("    current · available"));
@@ -5933,6 +6083,7 @@ fn model_list_route_rows_include_provider_model_and_current_route() {
                 model_id: "qwen-test".to_string(),
                 route: "lmstudio/qwen-test".to_string(),
                 current: true,
+                recommended: false,
                 route_label: "local/private",
                 source: "current",
                 availability: "available".to_string(),
@@ -5943,6 +6094,7 @@ fn model_list_route_rows_include_provider_model_and_current_route() {
                 model_id: "zai-org-glm-5-1".to_string(),
                 route: "openai/zai-org-glm-5-1".to_string(),
                 current: false,
+                recommended: false,
                 route_label: "external/API",
                 source: "builtin",
                 availability: "unavailable: configured API key environment variable is not set"
@@ -6161,7 +6313,7 @@ fn formats_recent_sessions_without_secret_terms() {
         created_at: "2026-05-09T12:00:00Z".to_string(),
         command: "chat".to_string(),
         provider: "lmstudio".to_string(),
-        model: "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive".to_string(),
+        model: "qwen2.5-7b-instruct".to_string(),
         status: "success".to_string(),
         path: PathBuf::from("/tmp/session.jsonl"),
     }];

@@ -95,7 +95,7 @@ Run `origin shell` to start the old interactive shell explicitly:
 origin-agent interactive shell
 
 Provider: lmstudio
-Model:    qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive
+Model:    qwen2.5-7b-instruct
 Git:      clean
 
 Type /help for commands.
@@ -105,7 +105,7 @@ Type /exit to quit.
 
 origin> /status
 origin> /model list
-origin> /model set qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive
+origin> /model set qwen2.5-7b-instruct
 origin> /provider list
 origin> /provider set lmstudio
 origin> hello
@@ -224,7 +224,7 @@ The current TUI includes:
 - `/status` provider routing/tradeoff hints for local, OpenAI, and OpenAI-compatible providers
 - safe exit with `q`, `Esc`, or `Ctrl+C`
 
-The TUI does not call a provider when it starts. It resolves and calls the provider only when you send a chat prompt.
+If no model is configured, the TUI probes model discovery once, shows either `No model selected` or an endpoint hint, and waits for `/model`. It does not silently commit a discovered model for the session.
 
 TUI interaction mode is session-local and defaults to Ask. `/mode` toggles between Ask and Agent; `/mode ask` and `/mode agent` set the mode explicitly:
 
@@ -312,7 +312,7 @@ TUI model route switching is session-local:
 origin tui
 
 > /models
-> /model set lmstudio/qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive
+> /model set lmstudio/qwen2.5-7b-instruct
 > /model set openai/zai-org-glm-5-1
 > /status
 ```
@@ -336,7 +336,7 @@ origin tui
 
 > /status
 > /models
-> /model set lmstudio/qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive
+> /model set lmstudio/qwen2.5-7b-instruct
 > hello
 > /propose README.md fix typo
 > /diff
@@ -412,7 +412,7 @@ LM Studio is the default provider preset.
 - Start the LM Studio Local Server before running `models`, `chat`, or `propose`.
 - The default base URL is `http://localhost:1234/v1`.
 - Load a model in LM Studio before sending prompts.
-- The current local target model is `qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive`.
+- Example configs use `qwen2.5-7b-instruct`; `default_model` is optional. If omitted, TUI users choose with `/model`, while non-interactive chat/propose commands use provider discovery with an auto-selected notice on stderr.
 - Very large models may fail to load or respond slowly depending on local hardware.
 
 Useful commands:
@@ -441,15 +441,18 @@ Example:
 
 ```toml
 default_provider = "lmstudio"
-default_model = "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
+# Optional. Omit default_model to choose from live discovery in /model.
+default_model = "qwen2.5-7b-instruct"
 
 [providers.lmstudio]
 base_url = "http://localhost:1234/v1"
-default_model = "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
+# Optional. Omit default_model to choose from live discovery in /model.
+default_model = "qwen2.5-7b-instruct"
 
 [providers.openai]
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
+# Optional. Omit default_model to choose from provider discovery.
 default_model = "zai-org-glm-5-1"
 ```
 
@@ -460,7 +463,7 @@ Resolution order:
 1. CLI args
 2. Environment variables
 3. User config
-4. Built-in defaults or provider fallback
+4. TUI: no selected model until `/model`; non-interactive chat/propose: provider fallback with an explicit stderr notice
 
 ## OpenAI Setup
 

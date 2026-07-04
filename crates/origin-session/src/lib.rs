@@ -949,7 +949,7 @@ mod tests {
             .unwrap();
         writer
             .record(SessionEvent::ModelResolved {
-                model: "openai-uncensored".to_string(),
+                model: "openai-explicit".to_string(),
             })
             .unwrap();
         drop(writer);

@@ -46,7 +46,7 @@ use crate::chat_workflow::{
     ChatWorkspaceOverviewContext, WorkspaceInstructions,
 };
 use crate::edit_workflow::{pending_proposal_snapshot, PendingCheckState, PendingProposal};
-use crate::runtime::{auth_label, RuntimeState};
+use crate::runtime::{auth_label, RuntimeState, MODEL_SOURCE_UNAVAILABLE};
 use crate::status_snapshot::{PendingProposalSnapshot, StatusSnapshot};
 use origin_config::{resolve_config, CliOverrides};
 use origin_protocol::chat::{ChatMessage, ChatRequest};
@@ -107,7 +107,7 @@ const KEYBOARD_SCROLL_ROWS: usize = 1;
 /// 端末に入り、worker poll → 描画 → 入力 dispatch の run loop を回す。loop を抜けると
 /// TuiTerminal の Drop が端末を復帰する。
 pub(crate) fn run() -> Result<(), String> {
-    let runtime = RuntimeState::initialize_without_model_fallback()?;
+    let runtime = RuntimeState::initialize_interactive()?;
     let workspace_instructions = WorkspaceInstructions::load_from_cwd(&runtime.cwd);
     let status = StatusSnapshot::from_runtime_with_workspace_instructions(
         &runtime,

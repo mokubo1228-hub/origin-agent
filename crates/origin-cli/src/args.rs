@@ -504,14 +504,14 @@ mod tests {
             "--provider".to_string(),
             "openai".to_string(),
             "--model".to_string(),
-            "openai-uncensored".to_string(),
+            "openai-explicit".to_string(),
             "hello".to_string(),
         ])
         .unwrap();
 
         assert_eq!(args.command, Command::Chat);
         assert_eq!(args.provider.as_deref(), Some("openai"));
-        assert_eq!(args.model.as_deref(), Some("openai-uncensored"));
+        assert_eq!(args.model.as_deref(), Some("openai-explicit"));
         assert_eq!(args.prompt.as_deref(), Some("hello"));
     }
 

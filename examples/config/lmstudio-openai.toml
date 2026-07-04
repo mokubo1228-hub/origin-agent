@@ -3,13 +3,16 @@
 # Do not put API key values in this file.
 
 default_provider = "lmstudio"
-default_model = "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
+# Optional. Omit default_model to choose from live discovery in /model.
+default_model = "qwen2.5-7b-instruct"
 
 [providers.lmstudio]
 base_url = "http://localhost:1234/v1"
-default_model = "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
+# Optional. Omit default_model to choose from live discovery in /model.
+default_model = "qwen2.5-7b-instruct"
 
 [providers.openai]
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
+# Optional. Omit default_model to choose from provider discovery.
 default_model = "zai-org-glm-5-1"

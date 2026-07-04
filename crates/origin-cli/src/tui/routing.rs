@@ -1,6 +1,7 @@
 //! provider / model route のヒントと選択肢の組み立て。
 //! route 表示は session-local switching の案内に留め、config 自動書き換えは行わない。
 use super::*;
+use origin_protocol::model::select_fallback_model;
 
 /// provider を選ぶ判断材料(route 種別・privacy・quota コスト・向き)をまとめた表示用ヒント。
 /// session-local 切替の案内であって、provider を自動選択したり config を書き換えたりはしない。
@@ -19,6 +20,7 @@ pub(super) struct ModelRouteEntry {
     pub(super) model_id: String,
     pub(super) route: String,
     pub(super) current: bool,
+    pub(super) recommended: bool,
     pub(super) route_label: &'static str,
     pub(super) source: &'static str,
     pub(super) availability: String,
@@ -41,6 +43,7 @@ pub(super) struct ModelRouteProviderModel {
     pub(super) source: &'static str,
     pub(super) availability: String,
     pub(super) selectable: bool,
+    pub(super) recommended: bool,
 }
 
 /// 現在の provider id から上の表示ヒントを引く。preset 固有(lmstudio=local / openai=external)で、
@@ -131,6 +134,7 @@ pub(super) fn model_route_provider_from_preset(preset: &ProviderPreset) -> Model
                 source: configured_or_default_source,
                 availability: format!("unavailable: {reason}"),
                 selectable: false,
+                recommended: false,
             })
             .into_iter()
             .collect();
@@ -157,6 +161,8 @@ pub(super) fn model_route_provider_from_preset(preset: &ProviderPreset) -> Model
     ) {
         match provider.list_models() {
             Ok(live_models) => {
+                let recommended_model_id =
+                    select_fallback_model(&live_models).map(|model| model.id.clone());
                 for model in live_models {
                     push_provider_model(
                         &mut models,
@@ -164,6 +170,7 @@ pub(super) fn model_route_provider_from_preset(preset: &ProviderPreset) -> Model
                         "live",
                         "available".to_string(),
                         true,
+                        recommended_model_id.as_deref() == Some(model.id.as_str()),
                     );
                 }
                 if models.is_empty() {
@@ -190,6 +197,7 @@ pub(super) fn model_route_provider_from_preset(preset: &ProviderPreset) -> Model
                 "available".to_string()
             },
             available,
+            false,
         );
     }
 
@@ -209,6 +217,7 @@ pub(super) fn push_provider_model(
     source: &'static str,
     availability: String,
     selectable: bool,
+    recommended: bool,
 ) {
     if model_id.trim().is_empty() {
         return;
@@ -216,6 +225,7 @@ pub(super) fn push_provider_model(
 
     if let Some(existing) = models.iter_mut().find(|model| model.model_id == model_id) {
         existing.selectable |= selectable;
+        existing.recommended |= recommended;
         if existing.source != "live" && source == "live" {
             existing.source = source;
         }
@@ -230,6 +240,7 @@ pub(super) fn push_provider_model(
         source,
         availability,
         selectable,
+        recommended,
     });
 }
 
@@ -275,6 +286,7 @@ pub(super) fn model_route_entries_from_providers(
                 model.source,
                 model.availability.clone(),
                 model.selectable,
+                model.recommended,
             );
         }
 
@@ -300,6 +312,7 @@ pub(super) fn model_route_entries_from_providers(
             "current",
             "available".to_string(),
             true,
+            false,
         );
     }
 
@@ -308,6 +321,7 @@ pub(super) fn model_route_entries_from_providers(
             model_route_provider_order(&entry.provider_id),
             entry.provider_id.clone(),
             !entry.current,
+            !entry.recommended,
             !entry.selectable,
             entry.model_id.clone(),
         )
@@ -326,6 +340,7 @@ pub(super) fn push_model_route_entry(
     source: &'static str,
     availability: String,
     selectable: bool,
+    recommended: bool,
 ) {
     let route = format!("{provider_id}/{model_id}");
     let current =
@@ -333,6 +348,7 @@ pub(super) fn push_model_route_entry(
 
     if let Some(existing) = entries.iter_mut().find(|entry| entry.route == route) {
         existing.current |= current;
+        existing.recommended |= recommended;
         if existing.source != "current" && source == "current" {
             existing.source = source;
         }
@@ -348,6 +364,7 @@ pub(super) fn push_model_route_entry(
         model_id: model_id.to_string(),
         route,
         current,
+        recommended,
         route_label,
         source,
         availability,
@@ -368,6 +385,7 @@ pub(super) fn push_unavailable_model_route_provider(
         model_id: String::new(),
         route: provider_id.to_string(),
         current: false,
+        recommended: false,
         route_label,
         source: "provider",
         availability: format!("unavailable: {}", redact_sensitive_text(reason)),
@@ -415,7 +433,7 @@ pub(super) fn format_tui_model(status: &StatusSnapshot) -> String {
     output.push_str("Model:\n");
     output.push_str(&format!(
         "  id:      {}\n",
-        status.model_id.as_deref().unwrap_or("unresolved")
+        status.model_id.as_deref().unwrap_or("(none)")
     ));
     output.push_str(&format!("  source:  {}\n", status.model_source));
     if let Some(error) = &status.model_error {
@@ -439,9 +457,9 @@ pub(super) fn format_tui_model_set_success(status: &StatusSnapshot) -> String {
     format!(
         "Model route set to {}/{}.\nprovider: {}\nmodel: {}\nsource: {}\n\nThis change is session-local. Config was not modified.",
         status.provider_id,
-        status.model_id.as_deref().unwrap_or("unresolved"),
+        status.model_id.as_deref().unwrap_or("(none)"),
         status.provider_id,
-        status.model_id.as_deref().unwrap_or("unresolved"),
+        status.model_id.as_deref().unwrap_or("(none)"),
         status.model_source
     )
 }
@@ -479,7 +497,7 @@ pub(super) fn format_tui_provider_set_success(status: &StatusSnapshot) -> String
         status.provider_id,
         status.base_url,
         status.auth_label,
-        status.model_id.as_deref().unwrap_or("unresolved"),
+        status.model_id.as_deref().unwrap_or("(none)"),
         status.model_source
     )
 }

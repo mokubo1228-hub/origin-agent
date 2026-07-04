@@ -40,9 +40,7 @@ mod tests {
 
     #[test]
     fn accepts_normal_chat_model_ids_as_fallback_candidates() {
-        assert!(is_fallback_candidate_model_id(
-            "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
-        ));
+        assert!(is_fallback_candidate_model_id("qwen2.5-7b-instruct"));
         assert!(is_fallback_candidate_model_id("google/gemma-4-31b"));
         assert!(is_fallback_candidate_model_id("zai-org-glm-5-1"));
     }
@@ -51,16 +49,13 @@ mod tests {
     fn selects_first_fallback_candidate() {
         let models = vec![
             ModelInfo::new("text-embedding-nomic-embed-text-v1.5"),
-            ModelInfo::new("qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"),
+            ModelInfo::new("qwen2.5-7b-instruct"),
             ModelInfo::new("google/gemma-4-31b"),
         ];
 
         let selected = select_fallback_model(&models).unwrap();
 
-        assert_eq!(
-            selected.id,
-            "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
-        );
+        assert_eq!(selected.id, "qwen2.5-7b-instruct");
     }
 
     #[test]

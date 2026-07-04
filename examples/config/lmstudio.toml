@@ -2,8 +2,10 @@
 # Copy to ~/.origin/config.toml or point ORIGIN_CONFIG at this file.
 
 default_provider = "lmstudio"
-default_model = "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
+# Optional. Omit default_model to choose from live discovery in /model.
+default_model = "qwen2.5-7b-instruct"
 
 [providers.lmstudio]
 base_url = "http://localhost:1234/v1"
-default_model = "qwen3.5-35b-a3b-uncensored-hauhaucs-aggressive"
+# Optional. Omit default_model to choose from live discovery in /model.
+default_model = "qwen2.5-7b-instruct"

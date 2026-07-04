@@ -11,6 +11,11 @@ use origin_tools::{discover_git_repo, git_dirty_status};
 
 const ORIGIN_MODEL_ENV: &str = "ORIGIN_MODEL";
 
+/// interactive 起動でモデルが明示されていない可視状態(旧 silent fallback の置換)。
+pub(crate) const MODEL_SOURCE_NOT_SELECTED: &str = "not-selected";
+/// provider endpoint に到達できず候補も出せない状態。
+pub(crate) const MODEL_SOURCE_UNAVAILABLE: &str = "unavailable";
+
 #[derive(Clone)]
 pub(crate) struct RuntimeState {
     pub(crate) provider: OpenAiCompatibleProvider,
@@ -78,7 +83,11 @@ impl RuntimeState {
         })
     }
 
-    pub(crate) fn initialize_without_model_fallback() -> Result<Self, String> {
+    /// interactive(TUI)起動用の初期化。CLI/env/config の明示モデルはそのまま採用し、
+    /// 明示が無い時だけ provider を1回 probe して「未選択(not-selected)」か
+    /// 「endpoint 不達(unavailable)」の可視状態にする。discovery 候補を silent に
+    /// 自動確定することはない。
+    pub(crate) fn initialize_interactive() -> Result<Self, String> {
         let config = resolve_config(CliOverrides::default()).map_err(|error| error.to_string())?;
         let registry = builtin_registry();
         let preset = registry
@@ -91,7 +100,7 @@ impl RuntimeState {
                 config.api_key_env_override.clone(),
             )
             .ok_or_else(|| format!("Unknown provider `{}`.", config.provider.as_str()))?;
-        let resolved_model = resolve_runtime_model_without_provider_call(config.default_model);
+        let resolved_model = resolve_runtime_model_interactive(config.default_model, &provider);
         let sessions_root = default_sessions_root()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|error| format!("unknown ({error})"));
@@ -124,12 +133,18 @@ impl RuntimeState {
         })
     }
 
+    /// chat 直前の model guard。以前はここで discovery 候補を silent に自動確定していたが、
+    /// 明示選択 UX への移行に伴い、未選択なら誘導付きエラーを返すだけにする(自動選択しない)。
     pub(crate) fn ensure_model_for_chat(&mut self) -> Result<&str, String> {
         if self.model_id.is_none() {
-            let resolved_model = resolve_runtime_model_without_env(None, &self.provider);
-            self.model_id = resolved_model.id;
-            self.model_source = resolved_model.source;
-            self.model_error = resolved_model.error;
+            return Err(if self.model_source == MODEL_SOURCE_UNAVAILABLE {
+                format!(
+                    "No provider endpoint is reachable: {}\nSet your provider first, then pick a model with /model.",
+                    self.model_error.as_deref().unwrap_or("unknown error")
+                )
+            } else {
+                "No model selected. Use /model to choose a model.".to_string()
+            });
         }
 
         self.model_for_chat()
@@ -277,8 +292,12 @@ pub(crate) fn resolve_runtime_model(
     resolve_runtime_model_without_env(config_model, provider)
 }
 
-pub(crate) fn resolve_runtime_model_without_provider_call(
+/// interactive(TUI)向けのモデル解決。env / config の明示だけを Selected として採用し、
+/// 明示が無ければ provider.list_models() の成否で NotSelected / Unavailable を返す。
+/// discovery 候補を自動確定しない(推奨候補の提示は /model picker 側が担う)。
+pub(crate) fn resolve_runtime_model_interactive(
     config_model: Option<String>,
+    provider: &OpenAiCompatibleProvider,
 ) -> RuntimeModel {
     if let Some(id) = env_model() {
         return RuntimeModel {
@@ -295,10 +314,17 @@ pub(crate) fn resolve_runtime_model_without_provider_call(
         };
     }
 
-    RuntimeModel {
-        id: None,
-        source: "unresolved".to_string(),
-        error: Some("model fallback is not resolved in TUI skeleton".to_string()),
+    match provider.list_models() {
+        Ok(_) => RuntimeModel {
+            id: None,
+            source: MODEL_SOURCE_NOT_SELECTED.to_string(),
+            error: None,
+        },
+        Err(error) => RuntimeModel {
+            id: None,
+            source: MODEL_SOURCE_UNAVAILABLE.to_string(),
+            error: Some(first_error_line(&error.user_message())),
+        },
     }
 }
 
@@ -404,7 +430,9 @@ mod tests {
     use origin_provider::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
 
     use super::{
-        auth_label, ensure_auth_available, resolve_runtime_model, RuntimeModel, RuntimeState,
+        auth_label, ensure_auth_available, resolve_runtime_model,
+        resolve_runtime_model_interactive, RuntimeModel, RuntimeState, MODEL_SOURCE_NOT_SELECTED,
+        MODEL_SOURCE_UNAVAILABLE,
     };
 
     #[test]
@@ -464,6 +492,55 @@ mod tests {
 
         assert_eq!(model.id.as_deref(), Some("config-model"));
         assert_eq!(model.source, "config");
+    }
+
+    #[test]
+    fn interactive_model_resolution_uses_config_without_auto_selecting() {
+        let provider = test_provider();
+        let model = resolve_runtime_model_interactive(Some("config-model".to_string()), &provider);
+
+        assert_eq!(model.id.as_deref(), Some("config-model"));
+        assert_eq!(model.source, "config");
+        assert_eq!(model.error, None);
+    }
+
+    #[test]
+    fn interactive_model_resolution_marks_unreachable_endpoint_unavailable() {
+        let provider = test_provider_with_id("lmstudio", "http://127.0.0.1:1/v1");
+        let model = resolve_runtime_model_interactive(None, &provider);
+
+        assert_eq!(model.id, None);
+        assert_eq!(model.source, MODEL_SOURCE_UNAVAILABLE);
+        assert!(model.error.is_some());
+    }
+
+    #[test]
+    fn ensure_model_for_chat_does_not_auto_select_when_not_selected() {
+        let mut state = test_runtime_state();
+        state.model_id = None;
+        state.model_source = MODEL_SOURCE_NOT_SELECTED.to_string();
+        state.model_error = None;
+
+        let err = state.ensure_model_for_chat().unwrap_err();
+
+        assert!(err.contains("No model selected"));
+        assert!(err.contains("/model"));
+        assert_eq!(state.model_id, None);
+        assert_eq!(state.model_source, MODEL_SOURCE_NOT_SELECTED);
+    }
+
+    #[test]
+    fn ensure_model_for_chat_reports_unreachable_endpoint() {
+        let mut state = test_runtime_state();
+        state.model_id = None;
+        state.model_source = MODEL_SOURCE_UNAVAILABLE.to_string();
+        state.model_error = Some("local server not reachable".to_string());
+
+        let err = state.ensure_model_for_chat().unwrap_err();
+
+        assert!(err.contains("No provider endpoint is reachable"));
+        assert!(err.contains("local server not reachable"));
+        assert!(err.contains("/model"));
     }
 
     #[test]

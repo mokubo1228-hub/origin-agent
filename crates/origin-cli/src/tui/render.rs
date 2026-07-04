@@ -99,7 +99,11 @@ pub(super) fn chat_pane(
     }
 
     if messages.is_empty() && !loading {
-        return Paragraph::new(empty_state_lines(visible_height)).wrap(Wrap { trim: false });
+        return Paragraph::new(empty_state_lines(
+            visible_height,
+            &model_selection_state(&state.runtime),
+        ))
+        .wrap(Wrap { trim: false });
     }
     Paragraph::new(chat_visible_lines(
         messages,
@@ -124,8 +128,49 @@ pub(super) const ORIGIN_MASCOT: &[&str] = &[
     "  ▀▀▀ ██▀ ▀▀▀▀▄",
 ];
 
+/// 起動画面(landing)に出すモデル選択状態。明示モデルがあれば Selected、無ければ
+/// provider probe の結果で NotSelected(選ばせる)か Unavailable(endpoint 誘導)になる。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum TuiModelSelectionState {
+    Selected,
+    NotSelected,
+    Unavailable { provider_id: String, error: String },
+}
+
+/// runtime の model 解決結果を landing / 送信ブロック用の3状態へ写像する。
+pub(super) fn model_selection_state(runtime: &RuntimeState) -> TuiModelSelectionState {
+    if runtime.model_id.is_some() {
+        return TuiModelSelectionState::Selected;
+    }
+    if runtime.model_source == MODEL_SOURCE_UNAVAILABLE {
+        return TuiModelSelectionState::Unavailable {
+            provider_id: runtime.provider_id.clone(),
+            error: runtime
+                .model_error
+                .clone()
+                .unwrap_or_else(|| "provider unavailable".to_string()),
+        };
+    }
+    TuiModelSelectionState::NotSelected
+}
+
+/// endpoint 不達時の1行目(provider 種別ごとの actionable な文言)。
+/// config には base_url と api_key_env(環境変数名)だけを書く前提で、key の値には触れない。
+pub(super) fn model_unavailable_hint(provider_id: &str) -> &'static str {
+    if provider_id == "lmstudio" {
+        "Cannot reach LM Studio — start it or check base_url."
+    } else {
+        "Provider is not reachable — set base_url and api_key_env in ~/.origin/config.toml, then export that environment variable."
+    }
+}
+
 /// メッセージが1件も無い時の初期画面。十分な高さがある時だけマスコットを添える。
-pub(super) fn empty_state_lines(visible_height: u16) -> Vec<Line<'static>> {
+/// レイアウトは固定のまま、「Type a message to start.」の1行だけをモデル選択状態で
+/// 差し替える(Unavailable の時のみ直下に具体エラーを1行足す)。picker は重ねない。
+pub(super) fn empty_state_lines(
+    visible_height: u16,
+    model_state: &TuiModelSelectionState,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     // 縦の余白が足りない端末ではマスコットを省く(+6 は前後の空行とコピー行ぶん)。
     let show_mascot = visible_height >= ORIGIN_MASCOT.len() as u16 + 6;
@@ -143,7 +188,24 @@ pub(super) fn empty_state_lines(visible_height: u16) -> Vec<Line<'static>> {
 
     lines.push(Line::from("  origin-agent — local-first AI workbench"));
     lines.push(Line::from(""));
-    lines.push(style::footer_hint("Type a message to start."));
+    match model_state {
+        TuiModelSelectionState::Selected => {
+            lines.push(style::footer_hint("Type a message to start."));
+        }
+        TuiModelSelectionState::NotSelected => {
+            lines.push(Line::from(Span::styled(
+                "  No model selected — press /model to choose.".to_string(),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        TuiModelSelectionState::Unavailable { provider_id, error } => {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", model_unavailable_hint(provider_id)),
+                Style::default().fg(Color::Yellow),
+            )));
+            lines.push(style::footer_hint(&redact_sensitive_text(error)));
+        }
+    }
     lines
 }
 
@@ -999,14 +1061,19 @@ pub(super) fn header_lines(
     interaction_mode: TuiInteractionMode,
 ) -> Vec<Line<'static>> {
     let provider = redact_sensitive_text(&status.provider_id);
-    let model = redact_sensitive_text(status.model_id.as_deref().unwrap_or("unresolved"));
-    let source = redact_sensitive_text(&status.model_source);
+    let model_display = match status.model_id.as_deref() {
+        Some(model_id) => format!(
+            "{} ({})",
+            truncate_middle(&redact_sensitive_text(model_id), 44),
+            redact_sensitive_text(&status.model_source)
+        ),
+        None => "(none) — /model".to_string(),
+    };
     let git_state = redact_sensitive_text(&status.git_state);
     let mut lines = vec![Line::from(format!(
-        "origin-agent | provider: {} | model: {} ({}) | git: {} | mode: {}",
+        "origin-agent | provider: {} | model: {} | git: {} | mode: {}",
         provider,
-        truncate_middle(&model, 44),
-        source,
+        model_display,
         git_state,
         interaction_mode.label()
     ))];
@@ -1201,6 +1268,20 @@ pub(super) fn format_tui_agent_plan_action_hint(can_change_target: bool) -> Stri
     }
 }
 
+/// モデル未選択 / endpoint 不達のまま送信しようとした時のブロック文言。
+/// silent に送らず、状態に応じて「先に endpoint」か「先に /model」へ誘導する。
+pub(super) fn format_tui_send_blocked_without_model(state: &TuiModelSelectionState) -> String {
+    match state {
+        TuiModelSelectionState::Unavailable { provider_id, error } => format!(
+            "Message not sent — no provider endpoint is reachable.\n{}\nReason: {}\nThen pick a model with /model.",
+            model_unavailable_hint(provider_id),
+            redact_sensitive_text(error)
+        ),
+        _ => "Message not sent — no model is selected.\nPress /model to choose a model, then send again."
+            .to_string(),
+    }
+}
+
 /// chat 失敗の通知。理由を redact し、次の確認コマンドを案内する。
 pub(super) fn format_tui_chat_error(error: &str) -> String {
     format!(
@@ -1235,7 +1316,7 @@ pub(super) fn format_tui_status(status: &StatusSnapshot) -> String {
         routing.privacy,
         routing.quota_cost,
         routing.best_for,
-        status.model_id.as_deref().unwrap_or("unresolved"),
+        status.model_id.as_deref().unwrap_or("(none)"),
         status.model_source,
         status.config_path,
         status.sessions_root,

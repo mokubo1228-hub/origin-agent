@@ -288,7 +288,15 @@ pub(super) fn open_model_route_picker_with_routes(
         return;
     }
 
-    let selected = routes.iter().position(|route| route.current).unwrap_or(0);
+    let selected = routes
+        .iter()
+        .position(|route| route.current)
+        .or_else(|| {
+            routes
+                .iter()
+                .position(|route| route.recommended && route.selectable)
+        })
+        .unwrap_or(0);
     state.model_route_picker = Some(ModelRoutePicker {
         routes,
         selected,
@@ -470,10 +478,10 @@ pub(super) fn prepare_tui_submit(state: &mut TuiState) -> Option<TuiSubmit> {
         return None;
     }
 
-    state.result_panel = None;
-    clear_tui_input(state);
-    reset_suggestion_selection(state);
     if input.starts_with('/') {
+        state.result_panel = None;
+        clear_tui_input(state);
+        reset_suggestion_selection(state);
         if input.contains('\n') {
             return Some(TuiSubmit::Command(TuiCommand::Error(
                 "Multiline slash commands are not supported yet.\nKeep slash commands on one line."
@@ -482,6 +490,21 @@ pub(super) fn prepare_tui_submit(state: &mut TuiState) -> Option<TuiSubmit> {
         }
         return Some(parse_tui_command(&input));
     }
+
+    let model_state = model_selection_state(&state.runtime);
+    if model_state != TuiModelSelectionState::Selected {
+        state
+            .messages
+            .push(TuiMessage::Error(format_tui_send_blocked_without_model(
+                &model_state,
+            )));
+        pin_chat_to_latest(state);
+        return None;
+    }
+
+    state.result_panel = None;
+    clear_tui_input(state);
+    reset_suggestion_selection(state);
 
     if state.interaction_mode == TuiInteractionMode::Agent && has_pending_agent_plan(state) {
         let message = TuiMessage::Action(format_tui_agent_plan_action_hint_for_state(state));
