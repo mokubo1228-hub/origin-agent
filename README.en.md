@@ -58,8 +58,7 @@ anything is generated, separating plan selection from write approval:
 
 ![Save approval](docs/assets/proposal-review.png)
 
-> Screenshots live in [`docs/assets/`](docs/assets/CAPTURE.md). If an image above is
-> not rendering yet, the capture is still pending — see that guide for what to shoot.
+> Screenshots live in [`docs/assets/`](docs/assets/).
 
 ## How the safety model works
 
@@ -95,7 +94,7 @@ origin chat "hello"
 To use LM Studio (the default provider), start its local server
 (`http://localhost:1234/v1`) and load a model first. For the full command set, OpenAI /
 config / sessions, and complete safety behavior, see the
-**[full usage reference](docs/usage-reference.md)**.
+**[full usage reference](docs/spec/usage-reference.md)**.
 
 ## Architecture
 
@@ -114,7 +113,7 @@ config / sessions, and complete safety behavior, see the
   Ask / Agent modes, and a single-file propose → review → approve → apply loop.
 - **It intentionally does not**: auto-apply, multi-file natural-language edits, config
   auto-writing, provider auto-routing, MCP, or advanced resume.
-- Full behavior is in the [usage reference](docs/usage-reference.md); release history is
+- Full behavior is in the [usage reference](docs/spec/usage-reference.md); release history is
   in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Development
@@ -128,6 +127,6 @@ cargo test --workspace
 cargo run -p origin-cli -- --help
 ```
 
-## License
+## Usage scope
 
-[MIT](LICENSE)
+© 2026 mokubo1228-hub. Public temporarily for portfolio review only. No license is granted for reuse, copying, or modification (all rights reserved).

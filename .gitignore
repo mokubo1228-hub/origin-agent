@@ -22,3 +22,6 @@
 # Editor
 .vscode/
 .idea/
+
+# Local backstage notes (not part of the public repo)
+/private/

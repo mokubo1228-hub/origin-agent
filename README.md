@@ -59,8 +59,7 @@ aider のモデル自由度、Codex / Gemini CLI のターミナルネイティ�
 
 ![保存承認](docs/assets/proposal-review.png)
 
-> 画像は [`docs/assets/`](docs/assets/CAPTURE.md) に格納。上の画像が表示されない
-> 場合は撮影が未了(撮り方はそのガイドを参照)。
+> 画像は [`docs/assets/`](docs/assets/) に格納。
 
 ## 安全モデルの仕組み
 
@@ -97,7 +96,7 @@ origin chat "hello"
 LM Studio を既定プロバイダとして使う場合は、ローカルサーバ
 (`http://localhost:1234/v1`)を起動してモデルを読み込んでおく。全コマンド・
 OpenAI / 設定ファイル / セッション・安全挙動の網羅は
-**[利用リファレンス(完全版)](docs/usage-reference.md)** を参照。
+**[利用リファレンス(完全版)](docs/spec/usage-reference.md)** を参照。
 
 ## アーキテクチャ
 
@@ -116,7 +115,7 @@ OpenAI / 設定ファイル / セッション・安全挙動の網羅は
   切替、Ask / Agent モード、単一ファイルの提案 → レビュー → 承認 → 適用。
 - **やらないこと(意図的)**:自動適用、多ファイルの自然言語編集、config 自動書込、
   プロバイダ自動ルーティング、MCP、高度な resume。
-- 全挙動の網羅は [利用リファレンス](docs/usage-reference.md)、リリース履歴は
+- 全挙動の網羅は [利用リファレンス](docs/spec/usage-reference.md)、リリース履歴は
   [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 開発
@@ -130,6 +129,6 @@ cargo test --workspace
 cargo run -p origin-cli -- --help
 ```
 
-## ライセンス
+## 公開範囲
 
-[MIT](LICENSE)
+© 2026 mokubo1228-hub. ポートフォリオ閲覧用に一時公開しています。再利用・複製・改変の許諾はありません(All rights reserved)。

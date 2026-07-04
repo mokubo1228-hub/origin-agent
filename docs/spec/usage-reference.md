@@ -1,7 +1,7 @@
 # origin-agent 利用リファレンス(完全版 / English)
 
 > このファイルは CLI / interactive shell / TUI の **全コマンドと安全挙動を網羅した詳細リファレンス**。
-> portfolio / クイックスタートの入口は [README](../README.md) を参照。
+> portfolio / クイックスタートの入口は [README](../../README.md) を参照。
 > 内容は開発者・パワーユーザー向けに英語で維持している(AI / 開発 doc layer)。
 
 ---
@@ -681,10 +681,4 @@ cargo run -p origin-cli -- --help
 
 ## Reference Codebases
 
-`ai-cli-research/` contains read-only reference codebases:
-
-- `ai-cli-research/codex`
-- `ai-cli-research/aider`
-- `ai-cli-research/gemini-cli`
-
-Do not write implementation changes under `ai-cli-research/`.
+`ai-cli-research/`(codex / aider / gemini-cli)は、設計比較のためローカルで参照した read-only の先行実装。**このリポジトリには含まれない**(`.gitignore` で除外)。
