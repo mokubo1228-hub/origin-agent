@@ -234,7 +234,7 @@ TUI interaction mode is session-local and defaults to Ask. `/mode` toggles betwe
 > /mode agent
 ```
 
-Ask mode is read-only chat. When a normal non-slash prompt explicitly mentions safe file paths such as `README.md`, `CHANGELOG.md`, `docs/START_HERE.md`, or `crates/origin-cli/src/tui.rs`, the TUI reads those existing files and includes their contents as context for that one provider request. Missing or unsafe paths are skipped with a visible diagnostic. Ask mode never creates a pending edit proposal.
+Ask mode is read-only chat. When a normal non-slash prompt explicitly mentions safe file paths such as `README.md`, `CHANGELOG.md`, `docs/START_HERE.md`, or `crates/origin-cli/src/tui/mod.rs`, the TUI reads those existing files and includes their contents as context for that one provider request. Missing or unsafe paths are skipped with a visible diagnostic. Ask mode never creates a pending edit proposal.
 
 Ask mode can also answer bounded workspace overview prompts such as `このプロジェクトを軽く読んで`, `このフォルダを見て`, or `summarize this folder`. For these prompts, the TUI treats the current working directory as a generic workspace, builds a shallow bounded tree/list, and includes selected safe overview files such as README, START_HERE, CHANGELOG, docs Markdown files, Japanese handoff/spec notes, and common manifest files. It does not assume the workspace is a code repository, does not automatically expand to the git root, and does not read every file.
 
