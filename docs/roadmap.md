@@ -332,7 +332,7 @@ post-v1 の候補:
 8. v1.1+: explicit context selection for safe scoped work
 9. v1.1+: safe multi-file workflows
 
-Phase 23.4 で、Agent mode の state / Ask-vs-Agent contract correction が入った。これは Phase 23.5.1〜23.5.6 とともに **`v1.3.0` として release 済み**(最新 released tag は `v1.3.0`)。
+Phase 23.4 で、Agent mode の state / Ask-vs-Agent contract correction が入った。これは Phase 23.5.1〜23.5.6 とともに **`v1.3.0` として release 済み**(現在の最新 released tag は `v1.4.0`)。
 
 Phase 23.4 の受け入れ済み解釈:
 
@@ -357,12 +357,15 @@ Phase 23.4 の受け入れ済み解釈:
   - 23.5.4 — composer / command palette de-bordering。実装済み。
   - 23.5.5 — command-surface cleanup、planned `/resume` slot、`/sessions` advanced/direct 化、message history reskin。実装済み。
   - 23.5.6 — startup mascot landing(block-art mascot、`origin-agent — local-first AI workbench` wordmark、`Type a message to start.` hint。古い status block と edit-loop pipeline を empty state から除去)。実装済み。
-  - これらは実装済みで `## v1.3.0` CHANGELOG entry にまとめられ、**v1.3.0 として release 済み**(最新 released tag は `v1.3.0`)。
+  - これらは実装済みで `## v1.3.0` CHANGELOG entry にまとめられ、**v1.3.0 として release 済み**(現在の最新 released tag は `v1.4.0`)。
   - 以前 "23.5.6" と呼ばれた Agent / Proposal input-model 統一(instant `y` / `n` 撤去)は v1.3.0 scope 外で、post-v1.3 follow-up に deferred。
-- post-v1.3 の sequencing(product owner 確定):
-  - Phase 24 ORIGIN.md workspace instructions — `<cwd>/ORIGIN.md` を起動時に load し、Ask / Agent に read-only workspace background として渡す(safety / approval / routing は不変)。
-  - Phase 25 Agent intent classification — `まとめて` / `出力して` / `作って` のような create / output / summarize-to-file intent を、safety model を保ったまま自然に safe new-file/edit path へ通す。Phase 24 の ORIGIN.md context を活用する後段。
-  - small follow-up polish — command palette / composer `›` marker 統一、`model: unresolved` header wording。
+- Phase 24 / 25 / 26 は **`v1.4.0` として release 済み**(現在の最新 released tag。以前 post-v1.3 の product-owner 確定 sequencing だったもの):
+  - Phase 24 ORIGIN.md workspace instructions — `<cwd>/ORIGIN.md` を起動時に一度 load し、Ask / Agent に read-only workspace background として渡す。session cache + `/status` 表示、instruction 本文は transcript に保存しない(safety / approval / routing は不変)。
+  - Phase 25 Agent intent classification — Rust の verb/confirmation lexicon をやめ、model-driven action planner(read-only answer / clarification / 既存1ファイル update / 新規1ファイル create / cancel / no action のみ)に置換。origin が review 前に validate し、unsafe / invalid / multi-file は clarification に fallback。
+  - Phase 26 explicit model selection — 起動時の silent auto-select を廃止し、`No model selected — press /model to choose` を出して選択まで送信を block。`/model` picker は発見済み候補を 1-`Enter` recommendation として提示。
+- post-v1.4 direction:
+  - small follow-up polish は継続 — command palette / composer `›` marker 統一、header wording、細かい visual cleanup。
+  - future backlog(direction のみ・未スケジュール)— agent memory / セッション跨ぎの永続コンテキスト。次の committed phase は product owner の判断待ち。
 
 近い将来の default にしないもの:
 
@@ -440,7 +443,7 @@ After any shortcut key or `Enter` confirmation, the UI should visibly change imm
 
 `/diff`, `/check`, and `/apply` remain explicit fallback / direct / debug workflow commands. They are still important for manual inspection and precise control, but they should not be the primary mental model for normal Agent UX.
 
-After v1.2.0, Phase 23.4 corrected Agent mode state and Ask-vs-Agent contract behavior, and Phase 23.5.1–23.5.6 delivered the visual hierarchy / workbench convergence. These form a coherent user-facing milestone, released as `v1.3.0` (the latest released tag):
+After v1.2.0, Phase 23.4 corrected Agent mode state and Ask-vs-Agent contract behavior, and Phase 23.5.1–23.5.6 delivered the visual hierarchy / workbench convergence. These form a coherent user-facing milestone, released as `v1.3.0` (later superseded as latest by `v1.4.0`):
 
 - non-blocking TUI chat so the interface stays responsive while waiting for the model
 - focused composer and command palette interaction, with de-bordering and a shared left-rail visual grammar
@@ -452,7 +455,7 @@ After v1.2.0, Phase 23.4 corrected Agent mode state and Ask-vs-Agent contract be
 - startup mascot landing
 - Agent / Proposal / Result panels using background/accent styling rather than marker-heavy or border-heavy UI
 
-Post-v1.3 sequencing (confirmed): Phase 24 ORIGIN.md workspace instructions, then Phase 25 Agent intent classification, plus small follow-up polish. Deferred: the Agent / Proposal input-model unification (removing instant `y` / `n`).
+Shipped in `v1.4.0` (was the confirmed post-v1.3 sequencing): Phase 24 ORIGIN.md workspace instructions, Phase 25 Agent intent classification (model-driven action planner), and Phase 26 explicit model selection (no silent auto-select). Post-v1.4: small follow-up polish continues; agent memory / cross-session context stays a direction-only backlog item; deferred: the Agent / Proposal input-model unification (removing instant `y` / `n`).
 
 Do not prioritize before daily-use UX:
 

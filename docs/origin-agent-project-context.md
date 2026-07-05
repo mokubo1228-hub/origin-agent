@@ -505,7 +505,7 @@ Recent refactors:
 
 ## 11.1 Current Agent Mode Direction
 
-Phase 23.3 established the first Agent review workflow. Phase 23.4 (Ask / Agent mode-state correction) and Phase 23.5.1–23.5.6 are implemented and folded into the `## v1.3.0` entry, which is released; the latest released version is `v1.3.0`.
+Phase 23.3 established the first Agent review workflow. Phase 23.4 (Ask / Agent mode-state correction) and Phase 23.5.1–23.5.6 are implemented and folded into the released `## v1.3.0` entry. Phase 24 (ORIGIN.md workspace instructions), Phase 25 (model-driven Agent action planner / intent classification), and Phase 26 (explicit model selection) then shipped in `v1.4.0`, now the latest released version.
 
 Accepted Phase 23.4 interpretation:
 
@@ -546,7 +546,7 @@ Future visual hierarchy work should align the Agent / Proposal / Result UI towar
 
 Do not broaden the next visual hierarchy phase into multi-file Agent edits, resume, provider auto-routing, config auto-writing, MCP, auto-apply, or large module splitting.
 
-Phase 23.5.1 through 23.5.6 are implemented and folded into v1.3.0: a shared TUI style/component layer (`tui/style.rs`), left-rail `render_panel` live panels with reduced box-drawing, the `? more actions` reveal, input-buffer + Enter Agent review selection, `/models` numbering + numeric buffer, composer / command palette de-bordering, command-surface cleanup with the planned `/resume` slot and `/sessions` demotion, the message-history reskin, and the startup mascot landing. These shipped in `v1.3.0` (the latest released tag). The Phase 23.5 split is tracked in section 14.
+Phase 23.5.1 through 23.5.6 are implemented and folded into v1.3.0: a shared TUI style/component layer (`tui/style.rs`), left-rail `render_panel` live panels with reduced box-drawing, the `? more actions` reveal, input-buffer + Enter Agent review selection, `/models` numbering + numeric buffer, composer / command palette de-bordering, command-surface cleanup with the planned `/resume` slot and `/sessions` demotion, the message-history reskin, and the startup mascot landing. These shipped in `v1.3.0` (superseded as latest by `v1.4.0`). The Phase 23.5 split is tracked in section 14.
 
 ---
 
@@ -693,14 +693,19 @@ Completed Phase 23.5 split (visual hierarchy / interaction grammar / command sur
 * 23.5.5 — command-surface cleanup, planned `/resume` slot, `/sessions` demotion to advanced/direct, and message-history reskin. Implemented.
 * 23.5.6 — startup mascot landing (compact block-art mascot, `origin-agent — local-first AI workbench` wordmark, `Type a message to start.` hint; the old status block and edit-loop pipeline removed from the empty state). Implemented.
 
-All of the above are implemented and gathered into the `## v1.3.0` CHANGELOG entry, which is released; the latest released tag is v1.3.0.
+All of the above are implemented and gathered into the released `## v1.3.0` CHANGELOG entry; the latest released tag is now `v1.4.0` (see below).
 
-Post-v1.3 sequencing (confirmed by the product owner):
+Shipped in `v1.4.0` (was the confirmed post-v1.3 sequencing):
 
-* Phase 24 ORIGIN.md workspace instructions — load `<cwd>/ORIGIN.md` at startup and pass it to Ask / Agent as read-only workspace background, with no safety/approval/routing change.
-* Phase 25 Agent intent classification — make natural create / output / summarize-to-file intents reach the safe new-file/edit path more naturally while preserving the safety model; consumes the Phase 24 ORIGIN.md context.
-* small follow-up polish — command palette / composer `›` marker consistency and `model: unresolved` header wording.
-* deferred — the Agent / Proposal input-model unification (removing instant `y` / `n`) once labeled "23.5.6"; out of scope for v1.3.0.
+* Phase 24 ORIGIN.md workspace instructions — `<cwd>/ORIGIN.md` is loaded once at startup and passed to Ask / Agent as read-only workspace background, cached for the session and surfaced in `/status`; the instruction body is never written to transcript and there is no safety/approval/routing change.
+* Phase 25 Agent intent classification — Agent mode uses a model-driven action planner (read-only answer, clarification, one existing-file update, one new-file create, cancel, or no action), validated by origin before any review opens; unsafe, invalid, or multi-file output falls back to clarification.
+* Phase 26 explicit model selection — the TUI/CLI no longer silently auto-selects a discovered model; the landing shows `No model selected — press /model to choose` and blocks sending until one is chosen, and non-interactive `origin chat` / `propose` prints an explicit `auto-selected` note instead of a silent pick.
+
+Post-v1.4 direction:
+
+* small follow-up polish continues — command palette / composer `›` marker consistency and header wording.
+* future backlog (direction only, not scheduled) — agent memory / cross-session persistent context; no committed next phase until the product owner decides.
+* deferred — the Agent / Proposal input-model unification (removing instant `y` / `n`) once labeled "23.5.6".
 
 The existing safety model is unchanged: no auto-apply, write/apply approval stays the `y` / `n` permission gate, `/resume` restores no state and changes no files, and `/diff` / `/check` / `/apply` remain manual fallback commands.
 

@@ -109,6 +109,9 @@ OpenAI / 設定ファイル / セッション・安全挙動の網羅は
 | `origin-session` | JSONL transcript ログ・resume コンテキスト・秘密情報の redaction |
 | `origin-tools` | 安全ツールボックス — ファイル読込・diff 抽出・patch 検証・`git apply` チェック・承認ゲート |
 
+> 設計判断・データフロー・安全境界の詳細は
+> [設計ドキュメント](docs/design/architecture.md) を参照。
+
 ## スコープと現状
 
 - **できること**:ローカル/API モデルとのチャット、セッション内のモデル/プロバイダ
