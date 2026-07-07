@@ -17,33 +17,34 @@ use ratatui::Terminal;
 
 use super::style::{rail_color, PanelTone, RAIL};
 use super::{
-    accept_slash_suggestion, apply_non_git_new_file_at_root,
+    accept_slash_suggestion, apply_non_git_new_file_at_root, apply_tui_resume_result,
     ask_file_context_from_prompt_in_workspace, block_submit_while_agent_plan_in_flight,
-    block_submit_while_chat_in_flight, builtin_model_route_hint, cancel_pending_agent_plan,
-    chat_lines, chat_visible_lines, command_palette_line_count, command_palette_lines,
-    composer_cell_lines, composer_cursor_offset, composer_cursor_position, composer_line_count,
-    composer_lines, composer_placeholder, detect_prompt_file_paths, empty_state_lines,
-    finish_chat_submit, finish_tui_agent_propose_result, footer_text,
-    format_tui_apply_approval_prompt, format_tui_apply_check_failure, format_tui_apply_failure,
-    format_tui_apply_rejected, format_tui_apply_success, format_tui_chat_error,
-    format_tui_check_failure, format_tui_check_success, format_tui_clear_result, format_tui_model,
-    format_tui_model_routes, format_tui_model_set_error, format_tui_pending_diff,
-    format_tui_propose_error, format_tui_propose_result, format_tui_provider,
-    format_tui_provider_set_error, format_tui_sessions, format_tui_sessions_error,
-    format_tui_status, handle_pending_agent_review_key, handle_proposal_review_key,
-    handle_running_interrupt_key, handle_tui_command, handle_tui_input_key, handle_tui_scroll_key,
-    has_workspace_overview_intent, header_height, header_lines, insert_tui_newline,
-    interaction_lines, interaction_pane_height, interrupt_agent_generation,
-    is_terminal_control_fragment, model_route_entries_from_providers, model_route_picker_lines,
-    model_route_picker_visible_lines, model_unavailable_hint, move_model_route_picker_selection,
-    move_slash_suggestion_selection, open_model_route_picker_with_routes,
-    parse_agent_planner_action, parse_model_route_argument, pending_indicator_line,
-    poll_tui_agent_plan_worker, poll_tui_agent_propose_worker, poll_tui_chat_worker,
-    prepare_agent_prompt_submit_in_workspace, prepare_non_git_new_file_apply_at_root,
-    prepare_tui_submit, record_agent_planner_action_metadata, record_tui_pending_context,
-    refresh_status, render, review_panel_lines, scroll_chat_view,
-    should_include_workspace_overview, should_show_slash_suggestions, slash_completion_text,
-    slash_suggestion_lines, slash_suggestions, tui_help_text, tui_message_block, tui_provider_list,
+    block_submit_while_chat_in_flight, build_agent_planner_background, build_agent_planner_prompt,
+    builtin_model_route_hint, cancel_pending_agent_plan, chat_lines, chat_visible_lines,
+    command_palette_line_count, command_palette_lines, composer_cell_lines, composer_cursor_offset,
+    composer_cursor_position, composer_line_count, composer_lines, composer_placeholder,
+    detect_prompt_file_paths, empty_state_lines, finish_chat_submit,
+    finish_tui_agent_propose_result, footer_text, format_tui_apply_approval_prompt,
+    format_tui_apply_check_failure, format_tui_apply_failure, format_tui_apply_rejected,
+    format_tui_apply_success, format_tui_chat_error, format_tui_check_failure,
+    format_tui_check_success, format_tui_clear_result, format_tui_model, format_tui_model_routes,
+    format_tui_model_set_error, format_tui_pending_diff, format_tui_propose_error,
+    format_tui_propose_result, format_tui_provider, format_tui_provider_set_error,
+    format_tui_sessions, format_tui_sessions_error, format_tui_status,
+    handle_pending_agent_review_key, handle_proposal_review_key, handle_running_interrupt_key,
+    handle_tui_command, handle_tui_input_key, handle_tui_scroll_key, has_workspace_overview_intent,
+    header_height, header_lines, insert_tui_newline, interaction_lines, interaction_pane_height,
+    interrupt_agent_generation, is_terminal_control_fragment, model_route_entries_from_providers,
+    model_route_picker_lines, model_route_picker_visible_lines, model_unavailable_hint,
+    move_model_route_picker_selection, move_slash_suggestion_selection,
+    open_model_route_picker_with_routes, parse_agent_planner_action, parse_model_route_argument,
+    pending_indicator_line, poll_tui_agent_plan_worker, poll_tui_agent_propose_worker,
+    poll_tui_chat_worker, prepare_agent_prompt_submit_in_workspace,
+    prepare_non_git_new_file_apply_at_root, prepare_tui_submit,
+    record_agent_planner_action_metadata, record_tui_pending_context, refresh_status, render,
+    review_panel_lines, scroll_chat_view, should_include_workspace_overview,
+    should_show_slash_suggestions, slash_completion_text, slash_suggestion_lines,
+    slash_suggestions, tui_help_text, tui_message_block, tui_provider_list,
     workspace_overview_candidate_paths, workspace_overview_tree, AgentActionPlanner,
     AgentPlannerAction, AgentPlannerActionKind, AgentPromptSubmitResult, ChatPromptMode,
     ChatScrollDirection, ModelRouteEntry, ModelRoutePicker, ModelRouteProvider,
@@ -57,6 +58,7 @@ use super::{
     CHAT_OLDER_INDICATOR, KEYBOARD_SCROLL_ROWS, PROMPT_CONTINUATION_PREFIX,
     WORKSPACE_OVERVIEW_MAX_ENTRIES,
 };
+use super::{TuiResumedSession, UserMemory};
 use crate::chat_workflow::{ChatFileContext, ChatWorkflowResult, WorkspaceInstructions};
 use crate::edit_workflow::{
     PendingCheckState, PendingProposal, ProposePreviewError, ProposePreviewResult,
@@ -130,6 +132,8 @@ fn test_state(input: &str) -> TuiState {
         show_advanced_actions: false,
         selection_buffer: String::new(),
         workspace_instructions,
+        user_memory: UserMemory::None,
+        resumed_session: None,
     }
 }
 
@@ -208,6 +212,7 @@ impl AgentActionPlanner for FakePlanner {
         &mut self,
         input: &str,
         active_context: Option<&str>,
+        _background: Option<&str>,
     ) -> Result<AgentPlannerAction, String> {
         self.calls += 1;
         self.inputs.push(input.to_string());
@@ -595,9 +600,9 @@ fn agent_generation_state_shows_provider_running_status() {
 
     assert!(panel.contains("Generating update preview"));
     assert!(panel.contains("○ Generating update preview"));
-    assert!(panel.contains("esc/Ctrl+C to interrupt"));
+    assert!(panel.contains("Esc/Ctrl+C to interrupt"));
     assert!(panel.contains("Target: README.md"));
-    assert!(panel.contains("Waiting for provider..."));
+    assert!(panel.contains("Waiting for provider"));
     assert!(panel.contains("No files will be changed until save approval."));
     assert_eq!(composer_placeholder(&state), "Message or /command");
     assert_eq!(
@@ -629,6 +634,97 @@ fn agent_mode_submit_starts_planner_request_without_synchronous_mapping() {
 }
 
 #[test]
+fn agent_planner_background_bundles_instructions_memory_and_resume() {
+    let instructions = WorkspaceInstructions::Loaded {
+        path: "ORIGIN.md".to_string(),
+        bytes: 24,
+        sha256: "abc".to_string(),
+        body: "Prefer docs/ for summaries.".to_string(),
+    };
+    let memory = UserMemory::Loaded {
+        path: "memory.md".to_string(),
+        bytes: 24,
+        sha256: "def".to_string(),
+        body: "Prefers concise answers.".to_string(),
+    };
+    let resumed = TuiResumedSession {
+        session_id: "20260101-000000-abc123".to_string(),
+        source_path: "/tmp/20260101-000000-abc123.jsonl".to_string(),
+        context: "Previous session context".to_string(),
+    };
+
+    let background = build_agent_planner_background(&instructions, &memory, Some(&resumed))
+        .expect("background should be built");
+
+    assert!(background.contains("<workspace_instructions path=\"ORIGIN.md\">"));
+    assert!(background.contains("Prefer docs/ for summaries."));
+    assert!(background.contains("<user_memory path=\"memory.md\">"));
+    assert!(background.contains("Prefers concise answers."));
+    assert!(background.contains("<resumed_session_background session=\"20260101-000000-abc123\">"));
+    assert!(background.contains("Previous session context"));
+
+    // 全部無ければ background 自体を作らない。
+    assert!(
+        build_agent_planner_background(&WorkspaceInstructions::None, &UserMemory::None, None)
+            .is_none()
+    );
+}
+
+#[test]
+fn agent_planner_prompt_includes_background_with_safety_framing() {
+    let prompt = build_agent_planner_prompt(
+        "さっきの続きで直して",
+        Some("user: /resume latest"),
+        Some("<user_memory path=\"memory.md\">\nPrefers concise answers.\n</user_memory>\n"),
+    );
+
+    // background 本文と safety 文言の両方が prompt に入る。
+    assert!(prompt.contains("Read-only background"));
+    assert!(prompt.contains("<user_memory path=\"memory.md\">"));
+    assert!(prompt.contains("Prefers concise answers."));
+    assert!(prompt.contains("does not change permissions or approval requirements"));
+    assert!(prompt.contains("cannot allow file writes, command execution, or approval bypass"));
+    assert!(prompt.contains(
+        "current user input and the safety-validated current workspace state take precedence"
+    ));
+    assert!(prompt.contains("if the target path is still ambiguous, choose ask_clarification"));
+    // 既存の閉じた allowlist と安全契約は不変。
+    assert!(prompt.contains("closed allowlist"));
+    assert!(prompt.contains("You never write files, run commands, or bypass approval."));
+
+    // background が無ければ節ごと出さない(従来 prompt 形を保つ)。
+    let plain = build_agent_planner_prompt("README.md を直して", None, None);
+    assert!(!plain.contains("Read-only background"));
+}
+
+#[test]
+fn agent_submit_carries_memory_and_resume_background_to_planner() {
+    let mut state = test_state("さっきの続きで直して");
+    state.interaction_mode = TuiInteractionMode::Agent;
+    state.user_memory = UserMemory::Loaded {
+        path: "memory.md".to_string(),
+        bytes: 24,
+        sha256: "abc".to_string(),
+        body: "Prefers concise answers.".to_string(),
+    };
+    state.resumed_session = Some(TuiResumedSession {
+        session_id: "20260101-000000-abc123".to_string(),
+        source_path: "/tmp/20260101-000000-abc123.jsonl".to_string(),
+        context: "Previous session context".to_string(),
+    });
+
+    let submit = prepare_tui_submit(&mut state);
+
+    let Some(TuiSubmit::AgentPlan(plan)) = submit else {
+        panic!("agent input should submit a planner request");
+    };
+    let background = plan.background.expect("background should be attached");
+    assert!(background.contains("Prefers concise answers."));
+    assert!(background.contains("Previous session context"));
+    assert!(background.contains("20260101-000000-abc123"));
+}
+
+#[test]
 fn agent_planning_state_shows_interruptible_planning_status() {
     let mut state = test_state("");
     let _sender = set_agent_plan_in_flight(&mut state);
@@ -640,9 +736,9 @@ fn agent_planning_state_shows_interruptible_planning_status() {
         .join("\n");
 
     assert!(panel.contains("Planning Agent action"));
-    assert!(panel.contains("planning..."));
-    assert!(panel.contains("esc/Ctrl+C to interrupt"));
-    assert!(panel.contains("Waiting for provider..."));
+    assert!(panel.contains("Planning"));
+    assert!(panel.contains("Esc/Ctrl+C to interrupt"));
+    assert!(panel.contains("Waiting for provider"));
     assert!(panel.contains("No files will be changed."));
 }
 
@@ -1185,7 +1281,7 @@ fn interaction_cluster_combines_composer_footer_and_commands() {
     assert!(!output.contains("╭─ Compose"));
     assert!(!output.contains("╰"));
     assert!(!output.contains("│"));
-    assert!(output.contains("› /mode"));
+    assert!(output.contains("/mode"));
     assert!(output.contains("show Ask/Agent mode"));
     assert!(output.contains("› /"));
     assert!(output.contains("Tab complete"));
@@ -1761,7 +1857,7 @@ fn chat_in_flight_shows_waiting_state_panel_not_log_block() {
     assert!(panel.contains("○ Waiting for model"));
     assert!(panel.contains("No files will be changed."));
     assert!(panel.contains("Draft editable"));
-    assert!(!panel.contains("esc/Ctrl+C to interrupt"));
+    assert!(!panel.contains("Esc/Ctrl+C to interrupt"));
     assert!(!rendered.contains("· WAITING"));
 }
 
@@ -1906,7 +2002,7 @@ fn slash_suggestions_show_basic_commands_for_root_slash() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(output.contains("› /models"));
+    assert!(output.contains("/models"));
     assert!(output.contains("pick model route"));
     assert!(output.contains("/resume"));
     assert!(output.contains("/status"));
@@ -1996,14 +2092,27 @@ fn slash_suggestions_handle_unknown_prefix_and_pending_approval() {
 }
 
 #[test]
-fn slash_suggestions_mark_selected_item() {
-    let output = slash_suggestion_lines("/", false, false, 1, 80)
-        .into_iter()
+fn slash_suggestions_mark_selected_item_with_accent_not_marker() {
+    let lines = slash_suggestion_lines("/", false, false, 1, 80);
+    let output = lines
+        .iter()
         .map(|line| line.to_string())
         .collect::<Vec<_>>();
 
+    // 選択行も literal marker(`›` / `>`)を持たず、cyan + bold の強調だけで示す。
     assert!(output[0].starts_with("    /models"));
-    assert!(output[1].starts_with("  › /mode"));
+    assert!(output[1].starts_with("    /mode"));
+    assert!(!output[1].contains("›"));
+
+    let has_selected_accent = |line: &ratatui::text::Line<'_>| {
+        line.spans.iter().any(|span| {
+            span.style.fg == Some(Color::Cyan)
+                && span.style.add_modifier.contains(Modifier::BOLD)
+                && !span.content.trim().is_empty()
+        })
+    };
+    assert!(!has_selected_accent(&lines[0]));
+    assert!(has_selected_accent(&lines[1]));
 }
 
 #[test]
@@ -2457,6 +2566,80 @@ fn mode_command_shows_and_switches_session_local_mode() {
 
     handle_tui_command(&mut state, TuiCommand::ModeSet(TuiInteractionMode::Ask));
     assert_eq!(state.interaction_mode, TuiInteractionMode::Ask);
+}
+
+#[test]
+fn mode_switch_is_recorded_in_active_context_and_status() {
+    let mut state = test_state("");
+
+    handle_tui_command(&mut state, TuiCommand::ModeSet(TuiInteractionMode::Agent));
+
+    // 切替イベントは表示だけでなく provider へ再生される active context にも残る。
+    let context = state
+        .active_context
+        .provider_context()
+        .expect("mode switch should be recorded in active context");
+    assert!(context.contains("Mode switched to AGENT"));
+    // /status 用 snapshot も実際の Ask/Agent モードを反映する。
+    assert_eq!(state.status.interaction_mode.as_deref(), Some("AGENT"));
+
+    handle_tui_command(&mut state, TuiCommand::ModeSet(TuiInteractionMode::Ask));
+    let context = state
+        .active_context
+        .provider_context()
+        .expect("both switches should be recorded");
+    assert!(context.contains("Mode switched to ASK"));
+    assert_eq!(state.status.interaction_mode.as_deref(), Some("ASK"));
+}
+
+#[test]
+fn status_output_shows_mode_memory_resume_privacy_and_next_hint() {
+    let mut state = test_state("");
+    refresh_status(&mut state);
+    let output = format_tui_status(&state.status);
+
+    assert!(output.contains("mode:     ASK — read-only chat; nothing is written"));
+    assert!(output.contains("memory:                 none — add ~/.origin/memory.md"));
+    assert!(output.contains("resumed session:        none"));
+    assert!(output.contains("Privacy:"));
+    assert!(output.contains("secrets and full file bodies are never saved"));
+    assert!(output.contains("Next:"));
+    assert!(output.contains("Type a message to chat. /mode agent enables file changes."));
+
+    handle_tui_command(&mut state, TuiCommand::ModeSet(TuiInteractionMode::Agent));
+    state.user_memory = UserMemory::Loaded {
+        path: "memory.md".to_string(),
+        bytes: 24,
+        sha256: "abc".to_string(),
+        body: "Prefers concise answers.".to_string(),
+    };
+    state.resumed_session = Some(TuiResumedSession {
+        session_id: "20260101-000000-abc123".to_string(),
+        source_path: "/tmp/20260101-000000-abc123.jsonl".to_string(),
+        context: "Previous session context".to_string(),
+    });
+    refresh_status(&mut state);
+    let output = format_tui_status(&state.status);
+
+    assert!(output.contains("mode:     AGENT — file changes go through review and save approval"));
+    assert!(output.contains("memory:                 memory.md (loaded, 24 bytes)"));
+    assert!(output.contains("resumed session:        20260101-000000-abc123 (background only)"));
+    assert!(output
+        .contains("Describe a change; Agent opens a review panel before anything is written."));
+    // メモリ本文は /status に出さない。
+    assert!(!output.contains("Prefers concise answers."));
+}
+
+#[test]
+fn status_next_hint_prioritizes_model_selection() {
+    let mut state = test_state("");
+    state.runtime.model_id = None;
+    state.runtime.model_source = "not-selected".to_string();
+    refresh_status(&mut state);
+    let output = format_tui_status(&state.status);
+
+    assert!(output.contains("model:    (none) — press /model to choose"));
+    assert!(output.contains("Pick a model with /model, then type a message."));
 }
 
 #[test]
@@ -5119,7 +5302,7 @@ fn help_lists_tui_commands_and_current_limitations() {
     assert!(help.contains("/help"));
     assert!(help.contains("/status"));
     assert!(help.contains("/resume"));
-    assert!(help.contains("planned"));
+    assert!(help.contains("read-only background"));
     assert!(help.contains("/mode ask"));
     assert!(help.contains("/mode agent"));
     assert!(help.contains("Ask mode (default)"));
@@ -5335,38 +5518,90 @@ fn unknown_slash_command_is_user_facing_error() {
 }
 
 #[test]
-fn resume_command_and_args_parse_to_planned_resume() {
+fn resume_command_and_args_parse_to_lightweight_resume() {
     let mut resume = test_state("/resume");
     let mut resume_latest = test_state("/resume latest");
+    let mut resume_invalid = test_state("/resume a b");
 
     assert_eq!(
         prepare_tui_submit(&mut resume),
-        Some(TuiSubmit::Command(TuiCommand::Resume))
+        Some(TuiSubmit::Command(TuiCommand::Resume { target: None }))
     );
     assert_eq!(
         prepare_tui_submit(&mut resume_latest),
-        Some(TuiSubmit::Command(TuiCommand::Resume))
+        Some(TuiSubmit::Command(TuiCommand::Resume {
+            target: Some("latest".to_string())
+        }))
     );
+    assert!(matches!(
+        prepare_tui_submit(&mut resume_invalid),
+        Some(TuiSubmit::Command(TuiCommand::Error(text)))
+            if text.contains("Usage: /resume")
+    ));
 }
 
 #[test]
-fn resume_command_only_prints_planned_message_without_state_change() {
-    let mut state = test_state("/resume latest");
+fn resume_success_stores_background_context_without_restoring_state() {
+    let mut state = test_state("");
 
-    handle_tui_command(&mut state, TuiCommand::Resume);
+    apply_tui_resume_result(
+        &mut state,
+        Ok(origin_session::ResumeContext {
+            source_session_id: "20260101-000000-abc123".to_string(),
+            source_path: std::path::PathBuf::from("/tmp/20260101-000000-abc123.jsonl"),
+            context: "Previous session context:\n- session_id: 20260101-000000-abc123".to_string(),
+        }),
+    );
 
-    assert_eq!(state.messages.len(), 1);
+    let resumed = state
+        .resumed_session
+        .as_ref()
+        .expect("resume should be stored");
+    assert_eq!(resumed.session_id, "20260101-000000-abc123");
+    assert!(resumed.context.contains("Previous session context"));
+    assert_eq!(
+        state.status.resumed_session.as_deref(),
+        Some("20260101-000000-abc123")
+    );
     assert!(matches!(
         &state.messages[0],
         TuiMessage::Action(text)
-            if text.contains("planned") && text.contains("origin sessions")
+            if text.contains("Resumed from session 20260101-000000-abc123")
+                && text.contains("background only")
+                && text.contains("Nothing was restored")
     ));
+    // lightweight resume は状態を何も復元しない。
     assert!(state.pending_proposal.is_none());
     assert!(state.proposal_review.is_none());
     assert!(state.agent_generation.is_none());
     assert!(state.chat_in_flight.is_none());
     assert!(state.write_progress.is_none());
     assert!(state.pending_apply.is_none());
+    // model 側にも resume の発生が伝わるよう、notice が active context に積まれる。
+    assert!(state
+        .active_context
+        .provider_context()
+        .expect("notice should be in context")
+        .contains("Resumed from session"));
+}
+
+#[test]
+fn resume_error_reports_reason_without_state_change() {
+    let mut state = test_state("");
+
+    apply_tui_resume_result(
+        &mut state,
+        Err(origin_session::SessionError::NotFound {
+            session_id: "missing-session".to_string(),
+        }),
+    );
+
+    assert!(state.resumed_session.is_none());
+    assert!(matches!(
+        &state.messages[0],
+        TuiMessage::Error(text)
+            if text.contains("Could not resume") && text.contains("/sessions")
+    ));
     assert!(state.active_context.provider_context().is_none());
 }
 

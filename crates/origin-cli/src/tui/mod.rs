@@ -42,8 +42,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::chat_workflow::{
-    self, ChatFileContext, ChatFileContextRecord, ChatPromptMode, ChatWorkflowResult,
-    ChatWorkspaceOverviewContext, WorkspaceInstructions,
+    self, ChatFileContext, ChatFileContextRecord, ChatPromptMode, ChatResumedSession,
+    ChatWorkflowResult, ChatWorkspaceOverviewContext, UserMemory, WorkspaceInstructions,
 };
 use crate::edit_workflow::{pending_proposal_snapshot, PendingCheckState, PendingProposal};
 use crate::runtime::{auth_label, RuntimeState, MODEL_SOURCE_UNAVAILABLE};
@@ -54,7 +54,8 @@ use origin_protocol::provider::{ProviderAuth, ProviderPreset};
 use origin_protocol::session::SessionEvent;
 use origin_provider::{builtin_registry, ModelProvider};
 use origin_session::{
-    list_sessions, redact_sensitive_text, sha256_hex, SessionSummary, SessionWriter,
+    build_resume_context, list_sessions, redact_sensitive_text, sha256_hex, SessionSummary,
+    SessionWriter,
 };
 use origin_tools::discover_git_repo_from;
 use origin_tools::{file_read::read_workspace_file, Workspace, WorkspaceError};
@@ -109,10 +110,14 @@ const KEYBOARD_SCROLL_ROWS: usize = 1;
 pub(crate) fn run() -> Result<(), String> {
     let runtime = RuntimeState::initialize_interactive()?;
     let workspace_instructions = WorkspaceInstructions::load_from_cwd(&runtime.cwd);
-    let status = StatusSnapshot::from_runtime_with_workspace_instructions(
+    let user_memory = UserMemory::load_default();
+    let status = StatusSnapshot::from_tui_context(
         &runtime,
         PendingProposalSnapshot::none(),
         &workspace_instructions,
+        &user_memory,
+        TuiInteractionMode::Ask.label(),
+        None,
     );
     // 初期状態:Ask mode で開始し、pending な提案/承認/Agent plan は全て無し、worker も未起動。
     // 以降はこの単一の TuiState を run loop と全 handler が &mut で共有する。
@@ -147,6 +152,8 @@ pub(crate) fn run() -> Result<(), String> {
         show_advanced_actions: false,
         selection_buffer: String::new(),
         workspace_instructions,
+        user_memory,
+        resumed_session: None,
     };
     let mut terminal = TuiTerminal::enter()?;
 

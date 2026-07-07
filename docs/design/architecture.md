@@ -2,6 +2,8 @@
 
 origin-agent の内部構造と、その形にした理由。コード上の実体（crate / モジュール / 関数名）に対応づけて書いてあるので、記述はすべて `crates/` を辿れば検証できる。
 
+体験・文体・視覚・interaction の標準(色 / panel / selection / progress state / 承認文言)は [`design.md`](design.md)。本ファイルは構造のみを扱う。
+
 ## 技術スタック
 
 | 領域 | 採用 | 備考 |

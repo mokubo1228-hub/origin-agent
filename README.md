@@ -41,6 +41,10 @@ aider のモデル自由度、Codex / Gemini CLI のターミナルネイティ�
 - **本物の TUI ワークベンチ** — Ask / Agent モード、左 rail のビジュアル文法、
   追従するスラッシュコマンドパレット、日本語/全角対応の入力、ブロックアートの
   起動画面。
+- **文脈は明示的に** — `ORIGIN.md`(ワークスペース指示)と `~/.origin/memory.md`
+  (ユーザー所有のメモリ。origin は読むだけで書かない)、`/resume` による過去
+  セッションの read-only 背景。すべて上限付きで、transcript には metadata しか
+  残さない。
 - **読まれる前提の Rust** — provider / config / protocol / session / safety を分離
   した crate 構成、`unsafe_code = "forbid"`、500+ テスト。
 

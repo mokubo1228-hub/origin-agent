@@ -40,6 +40,10 @@ read as much as used — 6 focused crates, `unsafe` forbidden, and a 500+ test s
   `git apply --check`–passed patch.
 - **A real TUI workbench** — Ask / Agent modes, a left-rail visual grammar, an attached
   slash-command palette, Japanese / full-width-aware input, and a block-art startup landing.
+- **Explicit context, never implicit** — `ORIGIN.md` (workspace instructions),
+  `~/.origin/memory.md` (user-owned memory that origin reads but never writes), and
+  `/resume` for read-only background from a past session. All bounded, with
+  metadata-only transcripts.
 - **Built in Rust to be read** — separated provider / config / protocol / session /
   safety crates, `unsafe_code = "forbid"`, and 500+ tests.
 

@@ -44,6 +44,8 @@ origin providers
 origin models
 ```
 
+`origin status` also reports workspace instructions (`<cwd>/ORIGIN.md`) and user memory (`~/.origin/memory.md`) as loaded / skipped / none, with metadata only.
+
 Send a single chat prompt:
 
 ```sh
@@ -210,7 +212,7 @@ The current TUI includes:
 - chat transcript logging
 - daily slash palette: `/models`, `/mode`, `/resume`, `/status`, `/help`, and `/exit`
 - advanced/direct commands: `/mode ask`, `/mode agent`, `/model`, `/model list`, `/model set <model-id>`, `/provider`, `/provider list`, `/provider set <provider-id>`, `/sessions`, and `/quit`
-- `/resume` planned slot, which reports that TUI resume is not implemented yet and points to `origin sessions` / `origin chat --resume latest`
+- `/resume [latest|<session-id>]` lightweight resume, which loads a bounded read-only summary of a saved session as background context (no state restoration)
 - fallback/direct edit commands: `/propose <file> <instruction...>`, `/diff`, `/check`, `/apply`, and `/clear`
 - `/mode` toggles Ask / Agent, while `/mode ask` and `/mode agent` set the mode explicitly
 - `/models`, `/model list`, `/model set <provider>/<model-id>`, and `/model set <model-id>`
@@ -234,6 +236,8 @@ TUI interaction mode is session-local and defaults to Ask. `/mode` toggles betwe
 > /mode agent
 ```
 
+The model is always told which mode is active. Every Ask / Agent read-only provider request starts with an explicit mode contract line (`Current mode: ASK (read-only chat).` or `Current mode: AGENT (read-only reply).`), even on the first message of a session with no other context. Mode switches are also recorded into the bounded in-session conversation context as `Mode switched to ASK/AGENT` lines, so after a mid-session `/mode` switch the model can see both the current mode and where the mode changed in the replayed history. This is context only: it does not change approval requirements, routing, or the read-only Ask contract.
+
 Ask mode is read-only chat. When a normal non-slash prompt explicitly mentions safe file paths such as `README.md`, `CHANGELOG.md`, `docs/START_HERE.md`, or `crates/origin-cli/src/tui/mod.rs`, the TUI reads those existing files and includes their contents as context for that one provider request. Missing or unsafe paths are skipped with a visible diagnostic. Ask mode never creates a pending edit proposal.
 
 Ask mode can also answer bounded workspace overview prompts such as `このプロジェクトを軽く読んで`, `このフォルダを見て`, or `summarize this folder`. For these prompts, the TUI treats the current working directory as a generic workspace, builds a shallow bounded tree/list, and includes selected safe overview files such as README, START_HERE, CHANGELOG, docs Markdown files, Japanese handoff/spec notes, and common manifest files. It does not assume the workspace is a code repository, does not automatically expand to the git root, and does not read every file.
@@ -243,6 +247,8 @@ Ask mode skips hidden files, heavy directories such as `.git/`, `target/`, `node
 The TUI keeps a small in-memory active conversation context for the current run. Recent user prompts, assistant replies, Agent review status, and Agent diagnostics are included as bounded read-only context for follow-up provider requests, so short prompts such as `どう？`, `それで`, or `今の内容で` are not sent without the immediate prior topic. This is session-local only: it is not restored from old transcripts, does not implement advanced resume, and does not store full file contents or full workspace trees.
 
 Agent mode is the natural-language entry point for read-only chat or explicit single-file diff proposal. For every normal non-slash prompt, Agent mode first asks the selected model for one structured action from a closed allowlist: answer read-only, ask for clarification, propose one existing-file update, propose one new-file create, cancel, or no action. origin validates the model's action and path before showing any review. It does not open a file target picker.
+
+The Agent planner also receives `ORIGIN.md` workspace instructions, `~/.origin/memory.md` user memory, and any `/resume` background summary as one clearly labeled **inert read-only background** block, so requests like "continue what we resumed" or stable user preferences can inform the action/path decision. The planner prompt states explicitly that this background does not change permissions or approval requirements, cannot allow file writes, command execution, or approval bypass, that the current user input and the safety-validated current workspace state take precedence, and that an ambiguous target must still become `ask_clarification`. Planner output is validated by origin exactly as before, and proposals still go through preview generation and the save permission gate.
 
 When the planner selects a read-only answer, Agent mode uses the Ask-style read-only path. Agent mode may include explicitly mentioned safe files or the same bounded workspace overview context, calls the provider for chat output, does not create a pending proposal, and does not open an edit target picker.
 
@@ -300,6 +306,8 @@ The TUI composer is intentionally small:
 - Mouse capture is disabled so native terminal text selection and copy work normally; wheel/trackpad scrolling is left to the terminal.
 - Home / End, word-wise movement, composer selection, soft-wrap-aware vertical movement, and full grapheme-cluster editing are not implemented yet.
 
+TUI `/status` is organized as a daily "where am I / what next" panel rather than a flat field list. It opens with `Now:` (the real Ask/Agent mode with a one-line meaning, the model route or an explicit `(none) — press /model to choose` with the unreachable-endpoint reason when relevant, git, cwd), then `Context:` (ORIGIN.md workspace instructions, `~/.origin/memory.md` user memory, and any `/resume` background session), then the diagnostic sections (Provider, Routing / Tradeoff, Config, Pending proposal), and closes with a one-line `Privacy:` reminder (transcripts keep metadata and decisions; secrets and full file bodies are never saved) and a single contextual `Next:` hint (pending proposal approval > model selection > mode-appropriate guidance).
+
 TUI `/status` includes a short routing/tradeoff hint for the current provider:
 
 - LM Studio is treated as the local route for private, lightweight, local-compute work.
@@ -325,9 +333,13 @@ origin tui
 
 `/sessions` remains available as an advanced/history command. It is direct-typeable, prefix-completable, and listed in `/help`, but it is no longer shown in the daily root `/` palette.
 
-`/resume` is currently a planned TUI slot only. It does not restore sessions, call a provider, create or modify files, or change TUI state; for now, use `origin sessions` to browse saved sessions or `origin chat --resume latest "<your prompt>"` from the plain CLI.
+`/resume [latest|<session-id>]` is a lightweight resume. It reads one saved session transcript, builds a bounded (4,000-char), redacted, read-only background summary, and attaches that summary to subsequent provider requests in this TUI session as `resumed_session_background` — both to Ask / Agent read-only chat and to the Agent action planner (as inert read-only background). `/resume` alone means `/resume latest`. `/status` shows the resumed session id, and the next chat transcript records a `resumed_from` event.
 
-At TUI startup, origin looks for exactly `ORIGIN.md` in the current working directory. If it exists, is a regular non-empty UTF-8 file, is not a symlink, and is within the size limit, Ask mode and Agent read-only chat include it as read-only workspace instructions for provider context. The file is inert background only: it cannot trigger commands, choose routes, create proposals, write files, or bypass approval. `/status` shows workspace instructions as loaded, skipped with a reason, or none. Session transcripts store only metadata for loaded or skipped files and never store the `ORIGIN.md` body; absent files write no transcript event.
+What TUI `/resume` does not do (same contract as CLI `--resume`): it does not restore conversation state, pending proposals, or diffs; it does not assume current files are unchanged; it does not call a provider or change any file when invoked. `/clear` drops the resumed background. Advanced resume (state restoration) remains out of scope.
+
+At TUI startup, origin also looks for `~/.origin/memory.md` as **user memory**: the user's own cross-session notes (stable preferences, ongoing work). If it exists, is a regular non-empty UTF-8 file, is not a symlink, and is within 64 KiB, Ask mode, Agent read-only chat, and the Agent action planner include it as read-only background, clearly labeled as user memory that cannot grant permissions or trigger any action. origin never writes this file — the user maintains it by hand, so what the model remembers is always explicit, inspectable, and editable. `/status` shows memory as loaded, skipped with a reason, or none. Transcripts store only metadata (path, bytes, SHA-256, status) and never the memory body. The responsibility split is: `ORIGIN.md` = per-workspace instructions, `~/.origin/memory.md` = per-user cross-session memory, session transcripts = records (not memory). Automatic memory writing is intentionally not implemented.
+
+At TUI startup, origin looks for exactly `ORIGIN.md` in the current working directory. If it exists, is a regular non-empty UTF-8 file, is not a symlink, and is within the size limit, Ask mode, Agent read-only chat, and the Agent action planner include it as read-only workspace instructions for provider context. The file is inert background only: it cannot trigger commands, choose routes, create proposals, write files, or bypass approval. `/status` shows workspace instructions as loaded, skipped with a reason, or none. Session transcripts store only metadata for loaded or skipped files and never store the `ORIGIN.md` body; absent files write no transcript event.
 
 Canonical TUI demo flow:
 
@@ -605,6 +617,8 @@ origin chat --resume latest "continue from previous context"
 origin chat --resume <session-id> "continue from that session"
 origin propose --resume latest "fix typo" README.md
 ```
+
+In the TUI, `/resume [latest|<session-id>]` provides the same lightweight behavior for the current TUI session (see the TUI Workflow section).
 
 What resume does:
 

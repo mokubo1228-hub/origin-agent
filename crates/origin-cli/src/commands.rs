@@ -24,6 +24,7 @@ use std::env;
 use std::io::{self, Write};
 
 use crate::args::{Args, Command, HelpTopic, ModelAction, ProviderAction, SessionsAction};
+use crate::chat_workflow;
 
 const ORIGIN_MODEL_ENV: &str = "ORIGIN_MODEL";
 const PROPOSE_MAX_TOKENS: u32 = 4096;
@@ -186,6 +187,10 @@ fn status(args: Args) -> Result<(), String> {
     let cwd = env::current_dir()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|error| format!("unknown ({error})"));
+    let workspace_instructions = env::current_dir()
+        .map(chat_workflow::WorkspaceInstructions::load_from_cwd)
+        .unwrap_or(chat_workflow::WorkspaceInstructions::None);
+    let memory = chat_workflow::UserMemory::load_default();
 
     print!(
         "{}",
@@ -199,9 +204,31 @@ fn status(args: Args) -> Result<(), String> {
             cwd: &cwd,
             git: &git_status_label(),
             command: "origin",
+            workspace_instructions: &instruction_file_status_label(workspace_instructions.record()),
+            memory: &instruction_file_status_label(memory.record()),
         })
     );
     Ok(())
+}
+
+/// ORIGIN.md / memory.md の CLI status 用1行ラベル。
+/// loaded はサイズ、skipped は理由を添え、無ければ "none"(本文は出さない)。
+fn instruction_file_status_label(record: Option<chat_workflow::ChatFileContextRecord>) -> String {
+    match record {
+        None => "none".to_string(),
+        Some(record) => match record.status.as_str() {
+            "loaded" => format!(
+                "{} (loaded, {} bytes)",
+                record.path,
+                record.bytes.unwrap_or(0)
+            ),
+            _ => format!(
+                "{} (skipped, {})",
+                record.path,
+                record.reason.unwrap_or_else(|| "unknown".to_string())
+            ),
+        },
+    }
 }
 
 struct StatusModel {
@@ -219,6 +246,8 @@ struct StatusOutput<'a> {
     cwd: &'a str,
     git: &'a str,
     command: &'a str,
+    workspace_instructions: &'a str,
+    memory: &'a str,
 }
 
 fn format_status_output(status: StatusOutput<'_>) -> String {
@@ -232,6 +261,8 @@ fn format_status_output(status: StatusOutput<'_>) -> String {
     push_field(&mut output, "sessions", status.sessions);
     push_field(&mut output, "cwd", status.cwd);
     push_field(&mut output, "git", status.git);
+    push_field(&mut output, "instructions", status.workspace_instructions);
+    push_field(&mut output, "memory", status.memory);
     push_field(&mut output, "command", status.command);
     output
 }
@@ -2116,6 +2147,8 @@ mod tests {
             cwd: "/repo",
             git: "clean",
             command: "origin",
+            workspace_instructions: "none",
+            memory: "none",
         });
 
         assert!(output.contains("origin-agent status"));

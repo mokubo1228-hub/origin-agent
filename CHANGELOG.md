@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+Post-v1.4 daily-use UX lane: mode awareness, minimal user memory, TUI lightweight resume, `/status` information design, and TUI wording/visual-grammar unification. The safety model, approval semantics, and `/diff` / `/check` / `/apply` behavior are unchanged.
+
+### Ask / Agent mode awareness
+
+- Every TUI Ask / Agent read-only provider request now starts with an explicit mode contract line (`Current mode: ASK (read-only chat).` / `Current mode: AGENT (read-only reply).`), including the first message of a session with no other context, so the model always knows the active mode.
+- `/mode` switches are recorded into the bounded in-session conversation context as `Mode switched to ASK/AGENT` lines, so the model can see where a mid-session switch happened in the replayed history. `/status` also reflects the real Ask/Agent mode.
+- Non-TUI `origin chat` / `origin propose` keep their previous plain prompts (no mode line).
+
+### User memory (minimal, user-owned)
+
+- `~/.origin/memory.md`, when present, is loaded once at TUI startup and injected into Ask / Agent read-only provider context as clearly labeled read-only user memory, with the same validation as `ORIGIN.md` (regular non-empty UTF-8 file, no symlink, 64 KiB cap).
+- origin never writes this file; the user maintains it by hand. It cannot grant permissions, change approval requirements, or trigger any action. Transcripts record metadata only (path, bytes, SHA-256, status) and never the body. Absent files stay silent.
+- Responsibility split: `ORIGIN.md` = per-workspace instructions, `~/.origin/memory.md` = per-user cross-session memory, session transcripts = records. Automatic memory writing is intentionally not implemented.
+- The Agent action planner also receives `ORIGIN.md`, user memory, and any `/resume` summary as one labeled inert read-only background block, so they can inform action/path selection. The planner prompt states that this background changes no permissions or approval requirements, cannot allow writes, command execution, or approval bypass, that current input and validated workspace state take precedence, and that ambiguous targets must still become clarification. Planner output validation and the save permission gate are unchanged.
+
+### TUI lightweight resume
+
+- `/resume [latest|<session-id>]` now works in the TUI: it loads a bounded (4,000-char), redacted, read-only summary of one saved session and attaches it to subsequent provider requests as background context, reusing the CLI `--resume` machinery. `/resume` alone means `latest`.
+- Nothing is restored: no proposal, no diffs, no files, no provider call at resume time. `/status` shows the resumed session id, the next chat transcript records `resumed_from`, and `/clear` drops the background. Advanced resume remains out of scope.
+
+### /status information design
+
+- TUI `/status` is reorganized as a daily panel: `Now:` (real Ask/Agent mode with meaning, model route or an explicit no-model hint with the unreachable-endpoint reason, git, cwd), `Context:` (ORIGIN.md / memory / resumed session), the existing diagnostic sections, a one-line `Privacy:` reminder, and a single contextual `Next:` hint (pending approval > model selection > mode guidance).
+- CLI `origin status` adds `instructions:` and `memory:` lines (loaded / skipped / none, metadata only).
+
+### TUI wording / visual grammar unification
+
+- The command palette selected row drops the literal `›` marker and uses the shared cyan accent selection convention (panels and `/models` already did).
+- The Proposal review permission panel uses the Active (cyan) rail tone so the write-approval moment is visually distinct from informational panels.
+- Running-state labels are unified: `Planning`, `Waiting for provider` (no ellipsis), `Esc/Ctrl+C to interrupt` (capitalized), a single `Checking and writing` indicator in the Saving panel, and `Cancelled` action messages matching the `Interrupted` shape.
+- `docs/design/design.md` is added as the standard for tone/color, selection, progress states, approval wording, Ask/Agent voice, and fallback/debug visibility (`docs/design/architecture.md` stays structure-only).
+
 ## v1.4.0 - 2026-07-05
 
 - The TUI and CLI no longer silently auto-select a discovered model at startup. When no model is set via CLI, env, or config, the TUI landing replaces the start hint with an explicit `No model selected — press /model to choose` prompt (or, when the provider endpoint is unreachable, a hint to set the provider first) and blocks sending until a model is chosen. The layout is otherwise unchanged and no picker is auto-overlaid. A model set via config is used as-is with no gate.

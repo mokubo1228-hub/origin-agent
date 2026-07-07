@@ -96,9 +96,7 @@ pub(super) fn handle_tui_command(state: &mut TuiState, command: TuiCommand) {
                     &error.to_string(),
                 ))),
         },
-        TuiCommand::Resume => state
-            .messages
-            .push(TuiMessage::Action(tui_resume_planned_text())),
+        TuiCommand::Resume { target } => run_tui_resume(state, target),
         TuiCommand::Propose { path, instruction } => run_tui_propose(state, path, instruction),
         TuiCommand::AgentPropose { path, instruction } => start_tui_agent_propose(
             state,
@@ -121,6 +119,7 @@ pub(super) fn handle_tui_command(state: &mut TuiState, command: TuiCommand) {
         TuiCommand::Apply => run_tui_apply(state),
         TuiCommand::Clear => {
             let cleared_pending = state.pending_proposal.take().is_some();
+            state.resumed_session = None;
             state.pending_apply = None;
             state.proposal_review = None;
             state.agent_plan_in_flight = None;
@@ -179,18 +178,29 @@ pub(super) fn set_tui_mode(state: &mut TuiState, mode: TuiInteractionMode) {
     state.interaction_mode = mode;
     reset_advanced_reveal(state);
     reset_selection_buffer(state);
-    state
-        .messages
-        .push(TuiMessage::Action(format_tui_mode_set(mode)));
+    // 切替イベントを表示だけでなく active context にも積む。これで以降の provider
+    // リクエストに再生される会話履歴へ `tui: Mode switched to ...` 行が残り、
+    // model が「どこでモードが変わったか」を prompt 先頭の mode contract 行と併せて
+    // 認識できる(切替が model に伝わらない従来のズレの修正点)。
+    let message = TuiMessage::Action(format_tui_mode_set(mode));
+    state.active_context.push_tui_message(&message);
+    state.messages.push(message);
+    refresh_status(state);
 }
 
-/// runtime と workspace instructions から status snapshot を作り直す。
-/// pending proposal の有無も畳んで表示用 status に反映する。
+/// runtime・workspace instructions・user memory・現在の Ask/Agent モード・resumed session
+/// から status snapshot を作り直す。pending proposal の有無も畳んで表示用 status に反映する。
 pub(super) fn refresh_status(state: &mut TuiState) {
-    state.status = StatusSnapshot::from_runtime_with_workspace_instructions(
+    state.status = StatusSnapshot::from_tui_context(
         &state.runtime,
         pending_proposal_snapshot(state.pending_proposal.as_ref()),
         &state.workspace_instructions,
+        &state.user_memory,
+        state.interaction_mode.label(),
+        state
+            .resumed_session
+            .as_ref()
+            .map(|resumed| resumed.session_id.clone()),
     );
 }
 
@@ -222,9 +232,17 @@ pub(super) fn start_tui_chat(state: &mut TuiState, submit: TuiChatSubmit) {
     let (sender, receiver) = mpsc::channel();
     let mut runtime = state.runtime.clone();
     let workspace_instructions = state.workspace_instructions.clone();
+    let user_memory = state.user_memory.clone();
+    let resumed_session = state.resumed_session.clone();
 
     thread::spawn(move || {
-        let result = run_tui_chat(&mut runtime, submit, &workspace_instructions);
+        let result = run_tui_chat(
+            &mut runtime,
+            submit,
+            &workspace_instructions,
+            &user_memory,
+            resumed_session.as_ref(),
+        );
         let _ = sender.send(TuiChatWorkerResult { runtime, result });
     });
 
@@ -246,6 +264,7 @@ pub(super) fn start_tui_agent_plan(state: &mut TuiState, submit: TuiAgentPlanSub
     state.next_agent_plan_request_id = state.next_agent_plan_request_id.wrapping_add(1);
     let input = submit.input;
     let active_context = submit.active_context;
+    let background = submit.background;
     let worker_input = input.clone();
     let worker_active_context = active_context.clone();
 
@@ -254,7 +273,11 @@ pub(super) fn start_tui_agent_plan(state: &mut TuiState, submit: TuiAgentPlanSub
             let mut planner = RuntimeAgentActionPlanner {
                 runtime: &mut runtime,
             };
-            planner.plan_agent_action(&worker_input, worker_active_context.as_deref())
+            planner.plan_agent_action(
+                &worker_input,
+                worker_active_context.as_deref(),
+                background.as_deref(),
+            )
         };
         let _ = sender.send(TuiAgentPlanWorkerResult {
             request_id,
@@ -523,8 +546,15 @@ pub(super) fn run_tui_chat(
     runtime: &mut RuntimeState,
     submit: TuiChatSubmit,
     workspace_instructions: &WorkspaceInstructions,
+    user_memory: &UserMemory,
+    resumed_session: Option<&TuiResumedSession>,
 ) -> Result<ChatWorkflowResult, String> {
     runtime.ensure_model_for_chat()?;
+    let resumed = resumed_session.map(|resumed| ChatResumedSession {
+        source_session_id: resumed.session_id.clone(),
+        source_path: resumed.source_path.clone(),
+        context: resumed.context.clone(),
+    });
     chat_workflow::run_chat_with_context_for_mode(
         runtime,
         &submit.prompt,
@@ -533,6 +563,45 @@ pub(super) fn run_tui_chat(
         submit.workspace_overview,
         submit.active_context.as_deref(),
         Some(workspace_instructions),
+        Some(user_memory),
+        resumed.as_ref(),
         submit.prompt_mode,
     )
+}
+
+/// `/resume [latest|<session-id>]` の実体。過去 transcript から bounded・redacted な
+/// 背景要約を作り、以降の chat リクエストへ read-only で添えるだけの lightweight resume。
+/// 状態復元・diff 再利用・pending proposal 復元・provider 呼び出し・ファイル変更は一切しない。
+pub(super) fn run_tui_resume(state: &mut TuiState, target: Option<String>) {
+    let target = target.unwrap_or_else(|| "latest".to_string());
+    apply_tui_resume_result(state, build_resume_context(&target));
+}
+
+/// resume 結果を TuiState に反映する終端(テストからは結果を注入して呼べる)。
+pub(super) fn apply_tui_resume_result(
+    state: &mut TuiState,
+    result: Result<origin_session::ResumeContext, origin_session::SessionError>,
+) {
+    match result {
+        Ok(resume) => {
+            let session_id = resume.source_session_id.clone();
+            state.resumed_session = Some(TuiResumedSession {
+                session_id: session_id.clone(),
+                source_path: resume.source_path.display().to_string(),
+                context: resume.context,
+            });
+            refresh_status(state);
+            // 短い notice を active context にも積み、model 側にも resume が起きたこと
+            // だけは伝わるようにする(要約本文は provider prompt の専用ブロックで渡る)。
+            let message = TuiMessage::Action(format_tui_resume_loaded(&session_id));
+            state.active_context.push_tui_message(&message);
+            state.messages.push(message);
+        }
+        Err(error) => state
+            .messages
+            .push(TuiMessage::Error(format_tui_resume_error(
+                &error.to_string(),
+            ))),
+    }
+    pin_chat_to_latest(state);
 }

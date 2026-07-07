@@ -109,7 +109,7 @@ pub(super) const TUI_SLASH_COMMANDS: &[SlashCommandSuggestion] = &[
     },
     SlashCommandSuggestion {
         command: "/resume",
-        description: "resume a past session (planned)",
+        description: "use a past session as background",
         edit_loop: false,
     },
     SlashCommandSuggestion {
@@ -214,9 +214,10 @@ pub(super) fn slash_suggestion_lines(
         .into_iter()
         .enumerate()
         .map(|(index, suggestion)| {
-            let marker = if index == selected_index { "›" } else { " " };
+            // 選択行は cyan + bold のみで示す(literal `›` marker は使わない)。
+            // panel / /models の selected-row 規約と同じ表現に揃える。
             command_tray_row(
-                marker,
+                " ",
                 suggestion.command,
                 suggestion.description,
                 index == selected_index,
@@ -330,8 +331,11 @@ pub(super) fn parse_tui_command(input: &str) -> TuiSubmit {
             "Usage: /provider set <provider-id>".to_string(),
         )),
         ["/sessions"] => TuiSubmit::Command(TuiCommand::Sessions),
-        ["/resume"] => TuiSubmit::Command(TuiCommand::Resume),
-        ["/resume", ..] => TuiSubmit::Command(TuiCommand::Resume),
+        ["/resume"] => TuiSubmit::Command(TuiCommand::Resume { target: None }),
+        ["/resume", target] => TuiSubmit::Command(TuiCommand::Resume {
+            target: Some((*target).to_string()),
+        }),
+        ["/resume", ..] => TuiSubmit::Command(TuiCommand::Error(tui_resume_usage())),
         ["/propose"] => TuiSubmit::Command(TuiCommand::Error(tui_propose_usage())),
         ["/propose", _path] => TuiSubmit::Command(TuiCommand::Error(tui_propose_usage())),
         ["/propose", path, instruction @ ..] => TuiSubmit::Command(TuiCommand::Propose {

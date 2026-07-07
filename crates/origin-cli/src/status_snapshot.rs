@@ -1,4 +1,4 @@
-use crate::chat_workflow::WorkspaceInstructions;
+use crate::chat_workflow::{UserMemory, WorkspaceInstructions};
 use crate::runtime::RuntimeState;
 
 pub(crate) const PENDING_STATUS_NONE: &str = "none";
@@ -20,6 +20,11 @@ pub(crate) struct StatusSnapshot {
     pub(crate) config_path: String,
     pub(crate) sessions_root: String,
     pub(crate) workspace_instructions: WorkspaceInstructionsSnapshot,
+    pub(crate) user_memory: WorkspaceInstructionsSnapshot,
+    /// TUI の Ask/Agent モードラベル(ASK / AGENT)。非 TUI 経路では None。
+    pub(crate) interaction_mode: Option<String>,
+    /// `/resume` で読み込んだ過去 session id(background only)。無ければ None。
+    pub(crate) resumed_session: Option<String>,
     pub(crate) pending: PendingProposalSnapshot,
 }
 
@@ -56,6 +61,26 @@ impl StatusSnapshot {
         pending: PendingProposalSnapshot,
         workspace_instructions: &WorkspaceInstructions,
     ) -> Self {
+        Self::from_tui_context(
+            runtime,
+            pending,
+            workspace_instructions,
+            &UserMemory::None,
+            "",
+            None,
+        )
+    }
+
+    /// TUI セッションの実状態(Ask/Agent モード・user memory・resumed session)を含む
+    /// フル snapshot。interaction_mode_label が空文字列なら非 TUI 扱いで None にする。
+    pub(crate) fn from_tui_context(
+        runtime: &RuntimeState,
+        pending: PendingProposalSnapshot,
+        workspace_instructions: &WorkspaceInstructions,
+        user_memory: &UserMemory,
+        interaction_mode_label: &str,
+        resumed_session: Option<String>,
+    ) -> Self {
         Self {
             mode: "interactive".to_string(),
             command: "origin".to_string(),
@@ -73,6 +98,13 @@ impl StatusSnapshot {
             workspace_instructions: WorkspaceInstructionsSnapshot::from_workspace_instructions(
                 workspace_instructions,
             ),
+            user_memory: WorkspaceInstructionsSnapshot::from_user_memory(user_memory),
+            interaction_mode: if interaction_mode_label.is_empty() {
+                None
+            } else {
+                Some(interaction_mode_label.to_string())
+            },
+            resumed_session,
             pending,
         }
     }
@@ -92,6 +124,27 @@ impl WorkspaceInstructionsSnapshot {
                 reason: None,
             },
             WorkspaceInstructions::Skipped { bytes, reason, .. } => Self {
+                status: "skipped".to_string(),
+                bytes: *bytes,
+                reason: Some(reason.clone()),
+            },
+        }
+    }
+
+    /// user memory(~/.origin/memory.md)も同じ loaded/skipped/none の3状態で表す。
+    pub(crate) fn from_user_memory(memory: &UserMemory) -> Self {
+        match memory {
+            UserMemory::None => Self {
+                status: "none".to_string(),
+                bytes: None,
+                reason: None,
+            },
+            UserMemory::Loaded { bytes, .. } => Self {
+                status: "loaded".to_string(),
+                bytes: Some(*bytes),
+                reason: None,
+            },
+            UserMemory::Skipped { bytes, reason, .. } => Self {
                 status: "skipped".to_string(),
                 bytes: *bytes,
                 reason: Some(reason.clone()),

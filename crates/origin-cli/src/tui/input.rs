@@ -521,9 +521,15 @@ pub(super) fn prepare_tui_submit(state: &mut TuiState) -> Option<TuiSubmit> {
     if state.interaction_mode == TuiInteractionMode::Agent {
         state.loading = true;
         pin_chat_to_latest(state);
+        let background = build_agent_planner_background(
+            &state.workspace_instructions,
+            &state.user_memory,
+            state.resumed_session.as_ref(),
+        );
         return Some(TuiSubmit::AgentPlan(TuiAgentPlanSubmit {
             input,
             active_context,
+            background,
         }));
     }
 
@@ -1224,7 +1230,7 @@ pub(super) fn reject_pending_proposal_review(state: &mut TuiState) {
     clear_tui_input(state);
     reset_suggestion_selection(state);
     refresh_status(state);
-    let message = TuiMessage::Action("Cancelled.\nNo files were changed.\nReady.".to_string());
+    let message = TuiMessage::Action("Cancelled\n\nNo files were changed.\n\nReady.".to_string());
     state.active_context.push_tui_message(&message);
     state.messages.push(message);
     pin_chat_to_latest(state);
@@ -1245,7 +1251,7 @@ pub(super) fn clear_pending_proposal_review(state: &mut TuiState) {
     clear_tui_input(state);
     reset_suggestion_selection(state);
     refresh_status(state);
-    let message = TuiMessage::Action("Cancelled.\nNo files were changed.\nReady.".to_string());
+    let message = TuiMessage::Action("Cancelled\n\nNo files were changed.\n\nReady.".to_string());
     state.active_context.push_tui_message(&message);
     state.messages.push(message);
     pin_chat_to_latest(state);

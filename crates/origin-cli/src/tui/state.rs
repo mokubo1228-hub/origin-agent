@@ -64,6 +64,18 @@ pub(super) struct TuiState {
     pub(super) show_advanced_actions: bool,
     pub(super) selection_buffer: String,
     pub(super) workspace_instructions: WorkspaceInstructions,
+    pub(super) user_memory: UserMemory,
+    pub(super) resumed_session: Option<TuiResumedSession>,
+}
+
+/// `/resume` が読み込んだ過去 session の bounded read-only background。
+/// 状態は何も復元しない(proposal / diff / provider 状態は持たない)。
+/// 以降の chat リクエストに resumed_session_background として添えられるだけの値。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct TuiResumedSession {
+    pub(super) session_id: String,
+    pub(super) source_path: String,
+    pub(super) context: String,
 }
 
 /// provider へ送る短期会話文脈。意図的に上限付き(イベント数・文字数)で、
@@ -353,11 +365,15 @@ pub(super) struct TuiChatSubmit {
     pub(super) workspace_overview: Option<ChatWorkspaceOverviewContext>,
 }
 
-/// Agent planner への入力。自然文と、参照する active context。
+/// Agent planner への入力。自然文と、参照する active context、
+/// および ORIGIN.md / user memory / resumed session を束ねた inert read-only background。
+/// background は action/path 判断の文脈にだけ使われ、permission・validation・
+/// approval gate には一切影響しない(prompt 内でもその旨を明示する)。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TuiAgentPlanSubmit {
     pub(super) input: String,
     pub(super) active_context: Option<String>,
+    pub(super) background: Option<String>,
 }
 
 /// slash command を表す内部表現。handle_tui_command がこれを実行に落とす。
@@ -374,7 +390,9 @@ pub(super) enum TuiCommand {
     ProviderList,
     ProviderSet(String),
     Sessions,
-    Resume,
+    Resume {
+        target: Option<String>,
+    },
     Propose {
         path: String,
         instruction: String,

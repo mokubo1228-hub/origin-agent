@@ -589,7 +589,7 @@ pub(super) fn agent_generation_panel_lines(
         TuiPreviewKind::Generic => "Generating preview",
     };
     let hint = if can_interrupt {
-        Some("esc/Ctrl+C to interrupt")
+        Some("Esc/Ctrl+C to interrupt")
     } else {
         None
     };
@@ -605,7 +605,7 @@ pub(super) fn agent_generation_panel_lines(
                     redact_sensitive_text(&generation.target_path)
                 )),
                 style::BodyLine::Blank,
-                style::BodyLine::Text("Waiting for provider...".to_string()),
+                style::BodyLine::Text("Waiting for provider".to_string()),
                 style::BodyLine::Text("No files will be changed until save approval.".to_string()),
             ],
             actions: None,
@@ -624,13 +624,13 @@ pub(super) fn agent_planning_panel_lines(started_at: Instant, width: u16) -> Vec
             title: "Planning Agent action".to_string(),
             body: vec![
                 working_indicator_line(
-                    "planning...",
+                    "Planning",
                     started_at,
-                    Some("esc/Ctrl+C to interrupt"),
+                    Some("Esc/Ctrl+C to interrupt"),
                     width,
                 ),
                 style::BodyLine::Blank,
-                style::BodyLine::Text("Waiting for provider...".to_string()),
+                style::BodyLine::Text("Waiting for provider".to_string()),
                 style::BodyLine::Text("No files will be changed.".to_string()),
             ],
             actions: None,
@@ -671,8 +671,7 @@ pub(super) fn write_progress_panel_lines(
             tone: style::PanelTone::Active,
             title: "Saving".to_string(),
             body: vec![
-                working_indicator_line("Checking patch", progress.started_at, None, width),
-                working_indicator_line("Writing file", progress.started_at, None, width),
+                working_indicator_line("Checking and writing", progress.started_at, None, width),
                 style::BodyLine::Blank,
                 style::BodyLine::Text(format!(
                     "Target: {}",
@@ -764,7 +763,9 @@ pub(super) fn proposal_review_panel_lines(
 
     style::render_panel(
         &style::PanelView {
-            tone: style::PanelTone::Neutral,
+            // permission gate は情報パネル(Neutral)ではなく Active tone で描き、
+            // 「今が書き込み承認の判断点」であることを rail 色で判別できるようにする。
+            tone: style::PanelTone::Active,
             title: title.to_string(),
             body,
             actions,
@@ -1122,8 +1123,8 @@ pub(super) fn tui_help_text() -> String {
         "Daily:",
         "  /models      Pick a model route.",
         "  /mode        Show Ask/Agent mode (toggle).",
-        "  /resume      Resume a past session (planned — not implemented yet).",
-        "  /status      Show provider, model, config, session, cwd, and git state.",
+        "  /resume      Use a past session as read-only background (/resume [latest|<session-id>]).",
+        "  /status      Show mode, model, context, session, and what to do next.",
         "  /help        Show this command list.",
         "  /exit        Quit the TUI.",
         "",
@@ -1156,12 +1157,30 @@ pub(super) fn tui_help_text() -> String {
     .join("\n")
 }
 
-/// /resume 未実装の案内文(代替の CLI 手順を示す)。
-pub(super) fn tui_resume_planned_text() -> String {
-    "/resume is planned for a future phase. No session was restored.\n\
-For now: run `origin sessions` to browse saved sessions,\n\
-or start with `origin chat --resume latest \"<your prompt>\"`."
+/// /resume の usage 文(引数過多などの時に出す)。
+pub(super) fn tui_resume_usage() -> String {
+    "Usage: /resume [latest|<session-id>]\n\
+Loads a bounded read-only summary of a saved session as background context.\n\
+It does not restore state, diffs, proposals, or files."
         .to_string()
+}
+
+/// /resume 成功の通知。background only であること、何も復元・変更していないことを明示する。
+pub(super) fn format_tui_resume_loaded(session_id: &str) -> String {
+    format!(
+        "Resumed from session {} (background only).\n\
+New replies can see a short read-only summary of that session.\n\
+Nothing was restored: no proposal, no diffs, no files, no provider call.",
+        redact_sensitive_text(session_id)
+    )
+}
+
+/// /resume 失敗の通知。理由を redact し、一覧の確認手段を案内する。
+pub(super) fn format_tui_resume_error(error: &str) -> String {
+    format!(
+        "Could not resume.\nReason: {}\nNext: run /sessions to list saved sessions.",
+        redact_sensitive_text(error)
+    )
 }
 
 /// /propose の使い方(preview のみ・単一ファイル)を示す usage 文。
@@ -1298,16 +1317,37 @@ pub(super) fn format_tui_sessions_error(error: &str) -> String {
     )
 }
 
-/// /status の本文。runtime / provider / routing / model / config / workspace / pending を整形する。
+/// /status の本文。「今どういう状態か」(mode / model / context)を先頭に、
+/// provider / routing / config / pending の診断情報を後段に置き、最後に
+/// privacy の要約と「次に何をすればいいか」の1行ヒントで締める daily-use 情報設計。
 /// pending が none 以外の時だけ checked・instruction・files を redact して追記する。
 pub(super) fn format_tui_status(status: &StatusSnapshot) -> String {
     let routing = provider_routing_hint(status);
+    let model_line = match status.model_id.as_deref() {
+        Some(model_id) => format!("{} ({})", model_id, status.model_source),
+        None => "(none) — press /model to choose".to_string(),
+    };
     let mut output = format!(
-        "TUI status\n\nRuntime:\n  mode:     {}\n  command:  {}\n  cwd:      {}\n  git:      {}\n\nProvider:\n  id:       {}\n  kind:     {}\n  base_url: {}\n  auth:     {}\n\nRouting / Tradeoff:\n  route:      {}\n  privacy:    {}\n  quota/cost: {}\n  best for:   {}\n\nModel:\n  id:       {}\n  source:   {}\n\nConfig:\n  path:     {}\n  sessions: {}\n\nWorkspace:\n  workspace instructions: {}\n\nPending proposal:\n  status:   {}",
-        status.mode,
-        status.command,
-        status.cwd,
+        "TUI status\n\nNow:\n  mode:     {}\n  model:    {}",
+        format_status_mode_line(status),
+        model_line,
+    );
+    if status.model_id.is_none() {
+        if let Some(error) = &status.model_error {
+            output.push_str(&format!("\n  note:     {}", redact_sensitive_text(error)));
+        }
+    }
+    output.push_str(&format!(
+        "\n  git:      {}\n  cwd:      {}\n\nContext:\n  workspace instructions: {}\n  memory:                 {}\n  resumed session:        {}\n\nProvider:\n  id:       {}\n  kind:     {}\n  base_url: {}\n  auth:     {}\n\nRouting / Tradeoff:\n  route:      {}\n  privacy:    {}\n  quota/cost: {}\n  best for:   {}\n\nConfig:\n  path:     {}\n  sessions: {}\n\nPending proposal:\n  status:   {}",
         status.git_state,
+        status.cwd,
+        format_workspace_instructions_status(status),
+        format_user_memory_status(status),
+        status
+            .resumed_session
+            .as_deref()
+            .map(|session_id| format!("{} (background only)", redact_sensitive_text(session_id)))
+            .unwrap_or_else(|| "none".to_string()),
         status.provider_id,
         status.provider_kind,
         status.base_url,
@@ -1316,13 +1356,10 @@ pub(super) fn format_tui_status(status: &StatusSnapshot) -> String {
         routing.privacy,
         routing.quota_cost,
         routing.best_for,
-        status.model_id.as_deref().unwrap_or("(none)"),
-        status.model_source,
         status.config_path,
         status.sessions_root,
-        format_workspace_instructions_status(status),
         status.pending.status
-    );
+    ));
     if status.pending.status != "none" {
         if let Some(checked) = &status.pending.checked {
             output.push_str(&format!("\n  checked:  {checked}"));
@@ -1346,7 +1383,63 @@ pub(super) fn format_tui_status(status: &StatusSnapshot) -> String {
             }
         }
     }
+    output.push_str(&format!(
+        "\n\nPrivacy:\n  Transcripts keep metadata and decisions; secrets and full file bodies are never saved.\n\nNext:\n  {}",
+        status_next_hint(status)
+    ));
     output
+}
+
+/// mode 行の表示。ラベルに「そのモードで何が起きるか」の短い含意を添える。
+pub(super) fn format_status_mode_line(status: &StatusSnapshot) -> String {
+    match status.interaction_mode.as_deref() {
+        Some("ASK") => "ASK — read-only chat; nothing is written".to_string(),
+        Some("AGENT") => "AGENT — file changes go through review and save approval".to_string(),
+        Some(label) => label.to_string(),
+        None => status.mode.clone(),
+    }
+}
+
+/// user memory(~/.origin/memory.md)の status 表示。loaded はサイズ、skipped は理由、
+/// 無ければ作り方の1行ヒントを出す。
+pub(super) fn format_user_memory_status(status: &StatusSnapshot) -> String {
+    match status.user_memory.status.as_str() {
+        "loaded" => format!(
+            "{} (loaded, {})",
+            chat_workflow::USER_MEMORY_FILE,
+            format_bytes(status.user_memory.bytes.unwrap_or(0))
+        ),
+        "skipped" => {
+            let reason = status.user_memory.reason.as_deref().unwrap_or("unknown");
+            format!(
+                "{} (skipped, {})",
+                chat_workflow::USER_MEMORY_FILE,
+                redact_sensitive_text(reason)
+            )
+        }
+        _ => "none — add ~/.origin/memory.md for cross-session notes".to_string(),
+    }
+}
+
+/// 今の状態から「次に何をすればいいか」を1行で選ぶ。
+/// pending proposal > model 未選択(endpoint 不達含む) > モード別の通常ヒント、の優先順。
+pub(super) fn status_next_hint(status: &StatusSnapshot) -> String {
+    if status.pending.status != "none" {
+        return "A proposal is pending — approve or cancel it in the review panel (y/n)."
+            .to_string();
+    }
+    if status.model_id.is_none() {
+        if status.model_error.is_some() {
+            return "Start your provider endpoint, then pick a model with /model.".to_string();
+        }
+        return "Pick a model with /model, then type a message.".to_string();
+    }
+    match status.interaction_mode.as_deref() {
+        Some("AGENT") => {
+            "Describe a change; Agent opens a review panel before anything is written.".to_string()
+        }
+        _ => "Type a message to chat. /mode agent enables file changes.".to_string(),
+    }
 }
 
 /// ORIGIN.md workspace instructions の status 表示(loaded はサイズ、skipped は理由、他は none)。

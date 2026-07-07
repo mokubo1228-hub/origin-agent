@@ -703,11 +703,11 @@ Shipped in `v1.4.0` (was the confirmed post-v1.3 sequencing):
 
 Post-v1.4 direction:
 
-* small follow-up polish continues — command palette / composer `›` marker consistency and header wording.
-* future backlog (direction only, not scheduled) — agent memory / cross-session persistent context; no committed next phase until the product owner decides.
+* implemented (unreleased; see `## Unreleased` in `CHANGELOG.md`) — Ask/Agent mode contract lines plus `/mode` switch recording into the in-session conversation context; `~/.origin/memory.md` read-only user memory (origin never writes it; metadata-only transcript); TUI lightweight `/resume [latest|<session-id>]` (bounded read-only background, no state restoration); `/status` daily information design (Now / Context / diagnostics / Privacy / Next); TUI wording/visual-grammar unification; and `docs/design/design.md` as the experience standard.
+* future backlog (direction only, not scheduled) — an agent-written memory path (which would need its own explicit approval gate) and a richer sessions viewer; no committed next phase until the product owner decides.
 * deferred — the Agent / Proposal input-model unification (removing instant `y` / `n`) once labeled "23.5.6".
 
-The existing safety model is unchanged: no auto-apply, write/apply approval stays the `y` / `n` permission gate, `/resume` restores no state and changes no files, and `/diff` / `/check` / `/apply` remain manual fallback commands.
+The existing safety model is unchanged: no auto-apply, write/apply approval stays the `y` / `n` permission gate, `/resume` adds background context only — it restores no state and changes no files — and `/diff` / `/check` / `/apply` remain manual fallback commands.
 
 Phase 23.5 should preserve the existing safety model while reducing normal Agent UX exposure to internal patch mechanics:
 

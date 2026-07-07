@@ -364,8 +364,8 @@ Phase 23.4 の受け入れ済み解釈:
   - Phase 25 Agent intent classification — Rust の verb/confirmation lexicon をやめ、model-driven action planner(read-only answer / clarification / 既存1ファイル update / 新規1ファイル create / cancel / no action のみ)に置換。origin が review 前に validate し、unsafe / invalid / multi-file は clarification に fallback。
   - Phase 26 explicit model selection — 起動時の silent auto-select を廃止し、`No model selected — press /model to choose` を出して選択まで送信を block。`/model` picker は発見済み候補を 1-`Enter` recommendation として提示。
 - post-v1.4 direction:
-  - small follow-up polish は継続 — command palette / composer `›` marker 統一、header wording、細かい visual cleanup。
-  - future backlog(direction のみ・未スケジュール)— agent memory / セッション跨ぎの永続コンテキスト。次の committed phase は product owner の判断待ち。
+  - **実装済み(unreleased、`CHANGELOG.md` の `## Unreleased` 参照)** — Ask/Agent mode contract 行 + `/mode` 切替の会話コンテキスト記録、`~/.origin/memory.md` の read-only user memory(origin は書かない・metadata-only transcript)、TUI lightweight `/resume [latest|<session-id>]`(bounded read-only background、状態復元なし)、`/status` の daily 情報設計(Now / Context / 診断 / Privacy / Next)、wording / visual grammar 統一(palette `›` marker 撤去、permission panel の Active tone 等)、`docs/design/design.md`(体験標準)。
+  - future backlog(direction のみ・未スケジュール)— agent が memory を書く経路(必ず専用の明示承認 gate が要る)、sessions viewer の拡充。次の committed phase は product owner の判断待ち。
 
 近い将来の default にしないもの:
 
