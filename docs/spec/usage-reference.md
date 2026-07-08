@@ -212,7 +212,7 @@ The current TUI includes:
 - chat transcript logging
 - daily slash palette: `/models`, `/mode`, `/resume`, `/status`, `/help`, and `/exit`
 - advanced/direct commands: `/mode ask`, `/mode agent`, `/model`, `/model list`, `/model set <model-id>`, `/provider`, `/provider list`, `/provider set <provider-id>`, `/sessions`, and `/quit`
-- `/resume [latest|<session-id>]` lightweight resume, which loads a bounded read-only summary of a saved session as background context (no state restoration)
+- `/resume` resume picker over the most recent saved sessions, plus `/resume latest` / `/resume <session-id>` direct lightweight resume, which load a bounded read-only summary of a saved session as background context (no state restoration)
 - fallback/direct edit commands: `/propose <file> <instruction...>`, `/diff`, `/check`, `/apply`, and `/clear`
 - `/mode` toggles Ask / Agent, while `/mode ask` and `/mode agent` set the mode explicitly
 - `/models`, `/model list`, `/model set <provider>/<model-id>`, and `/model set <model-id>`
@@ -333,7 +333,9 @@ origin tui
 
 `/sessions` remains available as an advanced/history command. It is direct-typeable, prefix-completable, and listed in `/help`, but it is no longer shown in the daily root `/` palette.
 
-`/resume [latest|<session-id>]` is a lightweight resume. It reads one saved session transcript, builds a bounded (4,000-char), redacted, read-only background summary, and attaches that summary to subsequent provider requests in this TUI session as `resumed_session_background` — both to Ask / Agent read-only chat and to the Agent action planner (as inert read-only background). `/resume` alone means `/resume latest`. `/status` shows the resumed session id, and the next chat transcript records a `resumed_from` event.
+`/resume` (no arguments) opens a resume picker over the most recent saved sessions (up to 7, newest first). Each candidate takes two lines: a number, a relative time, and the first user prompt of that session (redacted and truncated), then a dim metadata line (kind · result · model). The picker uses the same interaction grammar as `/models`: `Up` / `Down`, a number buffer, `Backspace`, `Enter` to resume, and `Esc` to cancel, with the selected row shown by the cyan accent (no literal marker). Opening, highlighting, and cancelling change nothing: no provider call, no file change, no state change. There is no preview, search, or filter. If no sessions are saved yet, the picker does not open and origin prints `No saved sessions yet.`; an unreadable transcript is listed in place as `(unreadable session)`. While a proposal review, apply approval, or Agent review/plan is pending, `/resume` does not open the picker and reports that it is unavailable until the pending step is resolved.
+
+`/resume latest` and `/resume <session-id>` load immediately without the picker, and `Enter` in the picker feeds the same path. A resume is a lightweight resume: it reads one saved session transcript, builds a bounded (4,000-char), redacted, read-only background summary, and attaches that summary to subsequent provider requests in this TUI session as `resumed_session_background` — both to Ask / Agent read-only chat and to the Agent action planner (as inert read-only background). `/status` shows the resumed session id, and the next chat transcript records a `resumed_from` event.
 
 What TUI `/resume` does not do (same contract as CLI `--resume`): it does not restore conversation state, pending proposals, or diffs; it does not assume current files are unchanged; it does not call a provider or change any file when invoked. `/clear` drops the resumed background. Advanced resume (state restoration) remains out of scope.
 
@@ -618,7 +620,7 @@ origin chat --resume <session-id> "continue from that session"
 origin propose --resume latest "fix typo" README.md
 ```
 
-In the TUI, `/resume [latest|<session-id>]` provides the same lightweight behavior for the current TUI session (see the TUI Workflow section).
+In the TUI, `/resume latest` and `/resume <session-id>` provide the same lightweight behavior for the current TUI session, and `/resume` (no arguments) opens a picker over recent sessions that feeds the same path (see the TUI Workflow section).
 
 What resume does:
 

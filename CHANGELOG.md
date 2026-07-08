@@ -19,8 +19,9 @@ Post-v1.4 daily-use UX lane: mode awareness, minimal user memory, TUI lightweigh
 
 ### TUI lightweight resume
 
-- `/resume [latest|<session-id>]` now works in the TUI: it loads a bounded (4,000-char), redacted, read-only summary of one saved session and attaches it to subsequent provider requests as background context, reusing the CLI `--resume` machinery. `/resume` alone means `latest`.
-- Nothing is restored: no proposal, no diffs, no files, no provider call at resume time. `/status` shows the resumed session id, the next chat transcript records `resumed_from`, and `/clear` drops the background. Advanced resume remains out of scope.
+- `/resume` (no arguments) opens a resume picker over the most recent saved sessions (up to 7, newest first; two lines per candidate: number + relative time + first prompt, then a dim kind · result · model line). It uses the same interaction grammar as `/models` (Up/Down, number buffer, Backspace, Enter, Esc, cyan accent selection, no literal marker) and has no preview, search, or filter. `Enter` feeds the existing lightweight resume path; highlighting and `Esc` change nothing. With no saved sessions the picker does not open (`No saved sessions yet.`), an unreadable transcript is listed in place as `(unreadable session)`, and the picker is refused while a proposal review, apply approval, or Agent plan is pending. `/sessions` stays the advanced/history command.
+- `/resume latest` and `/resume <session-id>` still load immediately: they load a bounded (4,000-char), redacted, read-only summary of one saved session and attach it to subsequent provider requests as background context, reusing the CLI `--resume` machinery.
+- Nothing is restored: no proposal, no diffs, no files, no provider call at picker open/highlight/cancel or at resume time. `/status` shows the resumed session id, the next chat transcript records `resumed_from`, and `/clear` drops the background. Advanced resume remains out of scope.
 
 ### /status information design
 

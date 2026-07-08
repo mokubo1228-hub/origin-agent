@@ -1,5 +1,6 @@
 use origin_protocol::session::SessionEvent;
 use ring::digest::{digest, SHA256};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
 use std::error::Error;
@@ -44,6 +45,33 @@ pub struct ResumeContext {
     pub source_session_id: String,
     pub source_path: PathBuf,
     pub context: String,
+}
+
+/// resume picker が並べる1候補。UI 非依存の shared engine 型として置き、
+/// ratatui 等の表示型・相対時刻ラベルは含めない(表示は各 surface 側で作る)。
+/// 全 field は格納前に redact 済み。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResumeCandidate {
+    pub session_id: String,
+    pub source_path: PathBuf,
+    pub created_at: String,
+    pub kind: String,
+    pub intent: String,
+    pub files: Vec<String>,
+    pub outcome: ResumeOutcome,
+    pub model: String,
+}
+
+/// 候補 session の終端結果。Unknown は「transcript を読めなかった」プレースホルダ専用で、
+/// イベント走査からは出ない。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ResumeOutcome {
+    Applied,
+    Rejected,
+    Cancelled,
+    ReadOnly,
+    Error,
+    Unknown,
 }
 
 #[derive(Debug)]
@@ -244,6 +272,169 @@ pub fn build_resume_context_excluding_in(
     };
 
     Ok(resume_context_from_record(&record))
+}
+
+/// default root 版。実体は resume_candidates_in。
+pub fn resume_candidates(limit: usize) -> Result<Vec<ResumeCandidate>, SessionError> {
+    resume_candidates_in(&default_sessions_root()?, limit)
+}
+
+/// 直近 limit 件の resume 候補を新しい順に返す。read-only(何も書かない・provider を呼ばない)。
+/// - root 不在はエラーではなく空。
+/// - session ファイル名は timestamp 始まりなので、path 降順 = 新しい順として
+///   先頭 limit 件だけを読む(全ファイルを読まない)。
+/// - 読めない transcript は隠さず、その位置に `(unreadable session)` プレースホルダを残す
+///   (隠すと「latest が picker に出ない」混乱を生むため)。
+pub fn resume_candidates_in(
+    root: &Path,
+    limit: usize,
+) -> Result<Vec<ResumeCandidate>, SessionError> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates = Vec::new();
+    for path in discover_session_files(root)?.into_iter().rev().take(limit) {
+        match read_session(&path) {
+            Ok(record) => candidates.push(resume_candidate_from_record(&record)),
+            Err(_) => candidates.push(unreadable_resume_candidate(&path)),
+        }
+    }
+    Ok(candidates)
+}
+
+/// intent(代表 user 発話)の上限文字数。1行に畳んでからこの長さで末尾切りする。
+const RESUME_CANDIDATE_INTENT_MAX_CHARS: usize = 80;
+/// files に載せる読み取り path の最大件数(patch_applied が無い場合)。
+const RESUME_CANDIDATE_MAX_READ_FILES: usize = 3;
+
+/// 1 transcript から resume 候補を導出する(イベント走査 + redact。
+/// resume_context_from_record と同じ手法の候補版)。
+pub fn resume_candidate_from_record(record: &SessionRecord) -> ResumeCandidate {
+    let mut intent: Option<String> = None;
+    let mut applied_files: Vec<String> = Vec::new();
+    let mut read_files: Vec<String> = Vec::new();
+    let mut patch_applied = false;
+    let mut patch_rejected = false;
+    let mut approval_rejected = false;
+    let mut command_failed = false;
+    let mut diff_proposed = false;
+
+    for event in &record.events {
+        match event_type(event) {
+            Some("user_message") => {
+                if intent.is_none() {
+                    if let Some(text) = string_field(event, "text") {
+                        intent = Some(text.to_string());
+                    }
+                }
+            }
+            Some("file_read") | Some("file_context") => {
+                if let Some(path) = string_field(event, "path") {
+                    if !read_files.iter().any(|existing| existing == path) {
+                        read_files.push(path.to_string());
+                    }
+                }
+            }
+            Some("patch_applied") => {
+                patch_applied = true;
+                if let Some(files) = event.get("files").and_then(|value| value.as_array()) {
+                    for file in files.iter().filter_map(|value| value.as_str()) {
+                        applied_files.push(file.to_string());
+                    }
+                }
+            }
+            Some("patch_rejected") => patch_rejected = true,
+            Some("approval_decision") => {
+                if let Some(decision) = string_field(event, "decision") {
+                    if decision.to_ascii_lowercase().contains("reject") {
+                        approval_rejected = true;
+                    }
+                }
+            }
+            Some("command_failed") => command_failed = true,
+            Some("diff_proposed") => diff_proposed = true,
+            _ => {}
+        }
+    }
+
+    let outcome = if patch_applied {
+        ResumeOutcome::Applied
+    } else if patch_rejected || approval_rejected {
+        ResumeOutcome::Rejected
+    } else if command_failed || record.summary.status == "error" {
+        ResumeOutcome::Error
+    } else if diff_proposed {
+        ResumeOutcome::Cancelled
+    } else {
+        ResumeOutcome::ReadOnly
+    };
+
+    let files = if patch_applied && !applied_files.is_empty() {
+        applied_files
+    } else {
+        read_files.truncate(RESUME_CANDIDATE_MAX_READ_FILES);
+        read_files
+    };
+
+    ResumeCandidate {
+        session_id: record.summary.session_id.clone(),
+        source_path: record.summary.path.clone(),
+        created_at: record.summary.created_at.clone(),
+        kind: resume_candidate_kind(&record.summary.command),
+        intent: resume_candidate_intent(intent.as_deref().unwrap_or("(no message)")),
+        files: files
+            .iter()
+            .map(|file| redact_sensitive_text(file))
+            .collect(),
+        outcome,
+        model: redact_sensitive_text(&record.summary.model),
+    }
+}
+
+/// 読めなかった transcript のプレースホルダ候補。存在は隠さず、内容だけ unknown にする。
+fn unreadable_resume_candidate(path: &Path) -> ResumeCandidate {
+    ResumeCandidate {
+        session_id: path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        source_path: path.to_path_buf(),
+        created_at: "unknown".to_string(),
+        kind: "unknown".to_string(),
+        intent: "(unreadable session)".to_string(),
+        files: Vec::new(),
+        outcome: ResumeOutcome::Unknown,
+        model: "unknown".to_string(),
+    }
+}
+
+/// command 文字列を picker の kind 表示へ写像する(mode は使わない)。
+fn resume_candidate_kind(command: &str) -> String {
+    match command {
+        "chat" => "chat".to_string(),
+        "agent-plan" => "agent".to_string(),
+        "propose" => "propose".to_string(),
+        "apply" => "apply".to_string(),
+        other => redact_sensitive_text(&other.to_ascii_lowercase()),
+    }
+}
+
+/// 代表 intent を redact → 空白畳み込み → 先頭80 chars に整形する。
+fn resume_candidate_intent(text: &str) -> String {
+    let compact = redact_sensitive_text(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if compact.chars().count() > RESUME_CANDIDATE_INTENT_MAX_CHARS {
+        compact
+            .chars()
+            .take(RESUME_CANDIDATE_INTENT_MAX_CHARS)
+            .collect()
+    } else {
+        compact
+    }
 }
 
 pub fn resume_context_from_record(record: &SessionRecord) -> ResumeContext {
@@ -865,8 +1056,8 @@ mod tests {
         build_resume_context_excluding_in, build_resume_context_in,
         default_sessions_root_from_home, discover_session_files, format_event, generate_session_id,
         list_sessions_in, read_latest_session_in, read_session, redact_sensitive_text,
-        resume_context_from_record, session_file_path, sha256_hex, timestamp_from_unix_seconds,
-        SessionTimestamp, SessionWriter,
+        resume_candidates_in, resume_context_from_record, session_file_path, sha256_hex,
+        timestamp_from_unix_seconds, ResumeOutcome, SessionTimestamp, SessionWriter,
     };
 
     #[test]
@@ -1375,6 +1566,155 @@ mod tests {
             "[redacted]: token"
         );
         assert_eq!(redact_sensitive_text("Bearer secret"), "[redacted]");
+    }
+
+    /// resume_candidates テスト用の session transcript を、実運用と同じ
+    /// `YYYY/MM/YYYYMMDD-HHMMSS-suffix.jsonl` 配置で書く(path 順 = 時系列を保つ)。
+    fn write_candidate_session(root: &PathBuf, index: u32, extra_events: &[&str]) -> String {
+        let session_id = format!("20260505-01{index:02}00-aaaa{index:02}");
+        let mut lines = vec![
+            format!(
+                r#"{{"type":"session_started","session_id":"{session_id}","created_at":"2026-05-05T01:{index:02}:00Z","cwd":"/repo"}}"#
+            ),
+            r#"{"type":"command_started","command":"chat"}"#.to_string(),
+            r#"{"type":"model_resolved","model":"qwen"}"#.to_string(),
+            format!(r#"{{"type":"user_message","text":"prompt {index}"}}"#),
+        ];
+        lines.extend(extra_events.iter().map(|line| (*line).to_string()));
+        lines.push(r#"{"type":"session_finished","status":"success"}"#.to_string());
+        let line_refs = lines.iter().map(String::as_str).collect::<Vec<_>>();
+        write_jsonl(root, &format!("2026/05/{session_id}.jsonl"), &line_refs);
+        session_id
+    }
+
+    #[test]
+    fn resume_candidates_lists_recent_sessions_newest_first() {
+        let root = temp_dir("candidates-recent");
+        let first = write_candidate_session(&root, 1, &[]);
+        let second = write_candidate_session(&root, 2, &[]);
+        let third = write_candidate_session(&root, 3, &[]);
+
+        let candidates = resume_candidates_in(&root, 7).unwrap();
+
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0].session_id, third);
+        assert_eq!(candidates[1].session_id, second);
+        assert_eq!(candidates[2].session_id, first);
+        assert_eq!(candidates[0].kind, "chat");
+        assert_eq!(candidates[0].model, "qwen");
+        assert_eq!(candidates[0].created_at, "2026-05-05T01:03:00Z");
+        assert!(candidates[0]
+            .source_path
+            .ends_with(format!("{third}.jsonl")));
+    }
+
+    #[test]
+    fn resume_candidates_limits_to_requested_count() {
+        let root = temp_dir("candidates-limit");
+        for index in 1..=9 {
+            write_candidate_session(&root, index, &[]);
+        }
+
+        let candidates = resume_candidates_in(&root, 7).unwrap();
+
+        assert_eq!(candidates.len(), 7);
+        // 直近7件(9,8,...,3)だけが対象で、古い側(1,2)は含まれない。
+        assert_eq!(candidates[0].session_id, "20260505-010900-aaaa09");
+        assert_eq!(candidates[6].session_id, "20260505-010300-aaaa03");
+    }
+
+    #[test]
+    fn resume_candidates_derives_outcomes() {
+        let root = temp_dir("candidates-outcomes");
+        write_candidate_session(
+            &root,
+            1,
+            &[
+                r#"{"type":"diff_proposed","diff":"--- a/README.md"}"#,
+                r#"{"type":"approval_decision","decision":"approved"}"#,
+                r#"{"type":"patch_applied","files":["README.md"]}"#,
+            ],
+        );
+        write_candidate_session(
+            &root,
+            2,
+            &[
+                r#"{"type":"diff_proposed","diff":"--- a/README.md"}"#,
+                r#"{"type":"approval_decision","decision":"rejected"}"#,
+                r#"{"type":"patch_rejected"}"#,
+            ],
+        );
+        write_candidate_session(&root, 3, &[r#"{"type":"command_failed","error":"boom"}"#]);
+        write_candidate_session(&root, 4, &[r#"{"type":"diff_proposed","diff":"--- a/x"}"#]);
+        write_candidate_session(&root, 5, &[]);
+
+        let candidates = resume_candidates_in(&root, 7).unwrap();
+
+        // 新しい順: 5=chat-only, 4=diff-only, 3=error, 2=rejected, 1=applied。
+        assert_eq!(candidates[0].outcome, ResumeOutcome::ReadOnly);
+        assert_eq!(candidates[1].outcome, ResumeOutcome::Cancelled);
+        assert_eq!(candidates[2].outcome, ResumeOutcome::Error);
+        assert_eq!(candidates[3].outcome, ResumeOutcome::Rejected);
+        assert_eq!(candidates[4].outcome, ResumeOutcome::Applied);
+        assert_eq!(candidates[4].files, vec!["README.md".to_string()]);
+    }
+
+    #[test]
+    fn resume_candidates_redacts_intent_and_truncates() {
+        let root = temp_dir("candidates-redact");
+        let long_tail = "a".repeat(200);
+        write_jsonl(
+            &root,
+            "2026/05/20260505-010100-aaaa01.jsonl",
+            &[
+                r#"{"type":"session_started","session_id":"20260505-010100-aaaa01","created_at":"2026-05-05T01:01:00Z","cwd":"/repo"}"#,
+                r#"{"type":"command_started","command":"chat"}"#,
+                &format!(
+                    r#"{{"type":"user_message","text":"Authorization: Bearer topsecret\nline two {long_tail}"}}"#
+                ),
+                r#"{"type":"session_finished","status":"success"}"#,
+            ],
+        );
+
+        let candidates = resume_candidates_in(&root, 7).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        let intent = &candidates[0].intent;
+        assert!(!intent.contains("Bearer"));
+        assert!(!intent.contains("topsecret"));
+        assert!(intent.chars().count() <= 80);
+        assert!(!intent.contains('\n'));
+    }
+
+    #[test]
+    fn resume_candidates_marks_unreadable_session() {
+        let root = temp_dir("candidates-unreadable");
+        write_candidate_session(&root, 1, &[]);
+        write_jsonl(
+            &root,
+            "2026/05/20260505-010200-broken.jsonl",
+            &["{ this is not json"],
+        );
+        write_candidate_session(&root, 3, &[]);
+
+        let candidates = resume_candidates_in(&root, 7).unwrap();
+
+        assert_eq!(candidates.len(), 3);
+        // 壊れたファイルはその位置(2番目に新しい)に placeholder として残る。
+        assert_eq!(candidates[1].session_id, "20260505-010200-broken");
+        assert_eq!(candidates[1].intent, "(unreadable session)");
+        assert_eq!(candidates[1].outcome, ResumeOutcome::Unknown);
+        assert_eq!(candidates[0].session_id, "20260505-010300-aaaa03");
+        assert_eq!(candidates[2].session_id, "20260505-010100-aaaa01");
+    }
+
+    #[test]
+    fn resume_candidates_missing_root_returns_empty() {
+        let root = temp_dir("candidates-missing-root");
+
+        let candidates = resume_candidates_in(&root, 7).unwrap();
+
+        assert!(candidates.is_empty());
     }
 
     fn first_jsonl(root: PathBuf) -> PathBuf {

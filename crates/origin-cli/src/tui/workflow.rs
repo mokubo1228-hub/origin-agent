@@ -96,6 +96,7 @@ pub(super) fn handle_tui_command(state: &mut TuiState, command: TuiCommand) {
                     &error.to_string(),
                 ))),
         },
+        TuiCommand::ResumePicker => open_resume_picker(state),
         TuiCommand::Resume { target } => run_tui_resume(state, target),
         TuiCommand::Propose { path, instruction } => run_tui_propose(state, path, instruction),
         TuiCommand::AgentPropose { path, instruction } => start_tui_agent_propose(
@@ -567,6 +568,119 @@ pub(super) fn run_tui_chat(
         resumed.as_ref(),
         submit.prompt_mode,
     )
+}
+
+/// `/resume`(引数なし)の実体。直近候補を読んで resume picker を開くだけの read-only 操作で、
+/// provider 呼び出し・ファイル変更・状態変更(picker 以外)は一切しない。
+/// write permission gate(proposal review / pending apply)や Agent plan が pending の間は、
+/// 選択 UI と承認 UI を同時に画面へ出さないため開かずに拒否する。
+pub(super) fn open_resume_picker(state: &mut TuiState) {
+    if refuse_resume_picker_if_pending(state) {
+        return;
+    }
+    let candidates = origin_session::resume_candidates(RESUME_PICKER_MAX_ROWS);
+    open_resume_picker_with_result(state, candidates);
+}
+
+/// テスト用:sessions root を注入して picker を開く(本番 open_resume_picker は
+/// default root の thin wrapper。ガード・分岐は同一経路を通す)。
+#[cfg(test)]
+pub(super) fn open_resume_picker_in(state: &mut TuiState, root: &Path) {
+    if refuse_resume_picker_if_pending(state) {
+        return;
+    }
+    let candidates = origin_session::resume_candidates_in(root, RESUME_PICKER_MAX_ROWS);
+    open_resume_picker_with_result(state, candidates);
+}
+
+/// picker を開けない pending 状態なら拒否メッセージを出して true を返す(状態変化ゼロ)。
+/// chat_in_flight は許可する(resume background は次リクエストから効くだけで、
+/// 進行中リクエストには影響しない)。
+fn refuse_resume_picker_if_pending(state: &mut TuiState) -> bool {
+    if is_proposal_review_active(state)
+        || state.pending_apply.is_some()
+        || has_pending_agent_plan(state)
+        || state.agent_plan_in_flight.is_some()
+        || state.agent_generation.is_some()
+        || state.agent_propose_in_flight.is_some()
+        || state.write_progress.is_some()
+        || state.model_route_picker.is_some()
+    {
+        state.messages.push(TuiMessage::Error(
+            "Resume picker is unavailable while a review or approval is pending.\nResolve it first, then run /resume again."
+                .to_string(),
+        ));
+        pin_chat_to_latest(state);
+        return true;
+    }
+    false
+}
+
+/// 候補ロード結果から picker を開く共通段。エラーと0件は picker を開かず
+/// 通常メッセージで終える(load error / empty を picker state に持たない)。
+fn open_resume_picker_with_result(
+    state: &mut TuiState,
+    result: Result<Vec<origin_session::ResumeCandidate>, origin_session::SessionError>,
+) {
+    match result {
+        Err(error) => {
+            state
+                .messages
+                .push(TuiMessage::Error(format_tui_resume_error(
+                    &error.to_string(),
+                )));
+        }
+        Ok(candidates) if candidates.is_empty() => {
+            state.messages.push(TuiMessage::Action(
+                "No saved sessions yet.\nStart a chat first — transcripts are saved automatically."
+                    .to_string(),
+            ));
+        }
+        Ok(candidates) => {
+            state.resume_picker = Some(ResumePicker {
+                candidates,
+                selected: 0,
+                buffer: String::new(),
+            });
+        }
+    }
+    pin_chat_to_latest(state);
+}
+
+/// resume picker を閉じる(Esc など)。resume_picker 以外のフィールドには一切触らない
+/// (キャンセルは状態変化ゼロ、が安全契約)。
+pub(super) fn close_resume_picker(state: &mut TuiState) {
+    state.resume_picker = None;
+}
+
+/// picker の選択候補を lightweight resume に合流させる(Enter)。
+/// 候補の中身は使わず常に session_id で再解決し、既存の run_tui_resume →
+/// apply_tui_resume_result 経路(読み込み・notice・status 反映)をそのまま通す。
+pub(super) fn apply_selected_resume_candidate(state: &mut TuiState) {
+    let Some(session_id) = take_selected_resume_session_id(state) else {
+        return;
+    };
+    run_tui_resume(state, Some(session_id));
+}
+
+/// テスト用:sessions root を注入した select(本番は default root の run_tui_resume に合流)。
+#[cfg(test)]
+pub(super) fn apply_selected_resume_candidate_in(state: &mut TuiState, root: &Path) {
+    let Some(session_id) = take_selected_resume_session_id(state) else {
+        return;
+    };
+    apply_tui_resume_result(
+        state,
+        origin_session::build_resume_context_in(root, &session_id),
+    );
+}
+
+/// 選択中候補の session_id を取り出し、picker を閉じる(select の共通前段)。
+fn take_selected_resume_session_id(state: &mut TuiState) -> Option<String> {
+    let picker = state.resume_picker.as_ref()?;
+    let session_id = picker.candidates.get(picker.selected)?.session_id.clone();
+    close_resume_picker(state);
+    Some(session_id)
 }
 
 /// `/resume [latest|<session-id>]` の実体。過去 transcript から bounded・redacted な

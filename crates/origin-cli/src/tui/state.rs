@@ -52,6 +52,7 @@ pub(super) struct TuiState {
     pub(super) write_progress: Option<TuiWriteProgress>,
     pub(super) result_panel: Option<TuiResultPanel>,
     pub(super) model_route_picker: Option<ModelRoutePicker>,
+    pub(super) resume_picker: Option<ResumePicker>,
     pub(super) interaction_mode: TuiInteractionMode,
     pub(super) active_context: TuiActiveConversationContext,
     pub(super) pending_agent_existing_edit_plan: Option<PendingAgentExistingEditPlan>,
@@ -390,6 +391,7 @@ pub(super) enum TuiCommand {
     ProviderList,
     ProviderSet(String),
     Sessions,
+    ResumePicker,
     Resume {
         target: Option<String>,
     },

@@ -78,7 +78,8 @@ pub(super) fn header_height(
     header_lines(status, has_pending_apply, interaction_mode).len() as u16
 }
 
-/// chat 本文ペインを組む。model route picker > 空状態 > 通常メッセージ の優先で描き分ける。
+/// chat 本文ペインを組む。resume picker > model route picker > 空状態 > 通常メッセージ の
+/// 優先で描き分ける(picker 同士は相互排他だが、畳み順の契約として resume を先に見る)。
 pub(super) fn chat_pane(
     state: &TuiState,
     _status: &StatusSnapshot,
@@ -88,6 +89,15 @@ pub(super) fn chat_pane(
     visible_width: u16,
     visible_height: u16,
 ) -> Paragraph<'static> {
+    if let Some(picker) = &state.resume_picker {
+        return Paragraph::new(resume_picker_visible_lines(
+            picker,
+            visible_width,
+            visible_height,
+        ))
+        .wrap(Wrap { trim: false });
+    }
+
     if let Some(picker) = &state.model_route_picker {
         return Paragraph::new(model_route_picker_visible_lines(
             &picker.routes,
@@ -271,6 +281,7 @@ pub(super) fn interaction_lines(state: &TuiState, width: u16) -> Vec<Line<'stati
         state.write_progress.is_some(),
         state.chat_in_flight.is_some(),
         state.model_route_picker.is_some(),
+        state.resume_picker.is_some(),
         has_pending_agent_plan(state),
         state.pending_agent_new_file_override,
         state.show_advanced_actions,
@@ -926,6 +937,7 @@ pub(super) fn composer_placeholder(state: &TuiState) -> &'static str {
     } else if state.pending_agent_new_file_override {
         "New relative output path"
     } else if state.model_route_picker.is_some()
+        || state.resume_picker.is_some()
         || is_proposal_apply_blocked(state)
         || is_proposal_review_active(state)
         || has_pending_agent_plan(state)
@@ -946,7 +958,9 @@ pub(super) fn composer_placeholder(state: &TuiState) -> &'static str {
 /// composer 直下の操作ヒントと「ライブ composer か」フラグを、状態の優先順で1つ選ぶ。
 /// interrupt 系の文言は、実際に Esc/Ctrl+C が効く状態にだけ付ける。
 pub(super) fn composer_affordance(state: &TuiState) -> (&'static str, bool) {
-    if state.model_route_picker.is_some() {
+    if state.resume_picker.is_some() {
+        ("Choosing session · Up/Down · number · Enter · Esc", false)
+    } else if state.model_route_picker.is_some() {
         ("Selecting model · Up/Down · number · Enter · Esc", false)
     } else if is_proposal_apply_blocked(state) {
         if state.show_advanced_actions {
@@ -1006,12 +1020,15 @@ pub(super) fn footer_text(
     has_write_progress: bool,
     has_chat_in_flight: bool,
     has_model_route_picker: bool,
+    has_resume_picker: bool,
     has_pending_agent_plan: bool,
     has_agent_target_override: bool,
     advanced_revealed: bool,
     interaction_mode: TuiInteractionMode,
 ) -> &'static str {
-    if has_model_route_picker {
+    if has_resume_picker {
+        "Up/Down select · Enter resume · Esc cancel"
+    } else if has_model_route_picker {
         "Up/Down select · Enter use route · Esc cancel"
     } else if has_pending_apply {
         "Approval: y/yes apply | Enter/n/no/other reject | Ctrl+C quit"
@@ -1123,7 +1140,7 @@ pub(super) fn tui_help_text() -> String {
         "Daily:",
         "  /models      Pick a model route.",
         "  /mode        Show Ask/Agent mode (toggle).",
-        "  /resume      Use a past session as read-only background (/resume [latest|<session-id>]).",
+        "  /resume      Pick a recent session to use as read-only background (/resume latest|<session-id> loads directly).",
         "  /status      Show mode, model, context, session, and what to do next.",
         "  /help        Show this command list.",
         "  /exit        Quit the TUI.",

@@ -20,6 +20,7 @@ mod input;
 mod messages;
 mod model_picker;
 mod render;
+mod resume_picker;
 mod routing;
 mod state;
 mod style;
@@ -90,6 +91,9 @@ use self::messages::{chat_lines, tui_message_block, CHAT_NEWER_INDICATOR, CHAT_O
 #[cfg(test)]
 use self::model_picker::{format_tui_model_routes, model_route_picker_lines};
 use self::model_picker::{model_route_picker_visible_lines, ModelRoutePicker};
+#[cfg(test)]
+use self::resume_picker::{relative_time_label, resume_picker_lines};
+use self::resume_picker::{resume_picker_visible_lines, ResumePicker, RESUME_PICKER_MAX_ROWS};
 
 use self::agent::*;
 use self::command::*;
@@ -141,6 +145,7 @@ pub(crate) fn run() -> Result<(), String> {
         write_progress: None,
         result_panel: None,
         model_route_picker: None,
+        resume_picker: None,
         interaction_mode: TuiInteractionMode::Ask,
         active_context: TuiActiveConversationContext::default(),
         pending_agent_existing_edit_plan: None,
@@ -198,11 +203,14 @@ pub(crate) fn run() -> Result<(), String> {
         }
 
         // 残りは文脈優先で解釈する。特に Esc は「今開いている最も手前のもの」から畳む:
-        // model route picker を閉じる > proposal review を reject > target override 取消 >
-        // agent plan 取消 > どれも無ければ終了。
+        // resume picker を閉じる > model route picker を閉じる > proposal review を reject >
+        // target override 取消 > agent plan 取消 > どれも無ければ終了。
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
             KeyCode::Char('q') => break,
+            KeyCode::Esc if state.resume_picker.is_some() => {
+                close_resume_picker(&mut state);
+            }
             KeyCode::Esc if state.model_route_picker.is_some() => {
                 close_model_route_picker(&mut state);
             }

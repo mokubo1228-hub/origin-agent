@@ -109,7 +109,7 @@ pub(super) const TUI_SLASH_COMMANDS: &[SlashCommandSuggestion] = &[
     },
     SlashCommandSuggestion {
         command: "/resume",
-        description: "use a past session as background",
+        description: "pick a recent session as background",
         edit_loop: false,
     },
     SlashCommandSuggestion {
@@ -331,7 +331,7 @@ pub(super) fn parse_tui_command(input: &str) -> TuiSubmit {
             "Usage: /provider set <provider-id>".to_string(),
         )),
         ["/sessions"] => TuiSubmit::Command(TuiCommand::Sessions),
-        ["/resume"] => TuiSubmit::Command(TuiCommand::Resume { target: None }),
+        ["/resume"] => TuiSubmit::Command(TuiCommand::ResumePicker),
         ["/resume", target] => TuiSubmit::Command(TuiCommand::Resume {
             target: Some((*target).to_string()),
         }),

@@ -703,6 +703,7 @@ dependencies = [
  "origin-protocol",
  "rand",
  "ring",
+ "serde",
  "serde_json",
 ]
 

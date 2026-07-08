@@ -54,9 +54,13 @@ use super::{
     TuiAgentProposeWorkerResult, TuiChatInFlight, TuiChatSubmit, TuiChatWorkerResult, TuiCommand,
     TuiInteractionMode, TuiMessage, TuiModelSelectionState, TuiPreviewKind, TuiProposalApplyStatus,
     TuiProposalReview, TuiProposalReviewMode, TuiProposalReviewOrigin, TuiResultKind, TuiState,
-    TuiSubmit, ACTIVE_CONTEXT_MAX_CHARS, ACTIVE_CONTEXT_MAX_EVENTS, CHAT_NEWER_INDICATOR,
-    CHAT_OLDER_INDICATOR, KEYBOARD_SCROLL_ROWS, PROMPT_CONTINUATION_PREFIX,
+    TuiSubmit, TuiWriteProgress, ACTIVE_CONTEXT_MAX_CHARS, ACTIVE_CONTEXT_MAX_EVENTS,
+    CHAT_NEWER_INDICATOR, CHAT_OLDER_INDICATOR, KEYBOARD_SCROLL_ROWS, PROMPT_CONTINUATION_PREFIX,
     WORKSPACE_OVERVIEW_MAX_ENTRIES,
+};
+use super::{
+    apply_selected_resume_candidate_in, open_resume_picker_in, relative_time_label,
+    resume_picker_lines, resume_picker_visible_lines, ResumePicker,
 };
 use super::{TuiResumedSession, UserMemory};
 use crate::chat_workflow::{ChatFileContext, ChatWorkflowResult, WorkspaceInstructions};
@@ -121,6 +125,7 @@ fn test_state(input: &str) -> TuiState {
         write_progress: None,
         result_panel: None,
         model_route_picker: None,
+        resume_picker: None,
         interaction_mode: TuiInteractionMode::Ask,
         active_context: TuiActiveConversationContext::default(),
         pending_agent_existing_edit_plan: None,
@@ -309,6 +314,7 @@ fn footer_for_state(state: &TuiState) -> &'static str {
         state.write_progress.is_some(),
         state.chat_in_flight.is_some(),
         state.model_route_picker.is_some(),
+        state.resume_picker.is_some(),
         state.pending_agent_existing_edit_plan.is_some()
             || state.pending_agent_new_file_plan.is_some(),
         state.pending_agent_new_file_override,
@@ -1739,6 +1745,7 @@ fn footer_suggests_starter_commands_without_pending_proposal() {
         false,
         false,
         false,
+        false,
         TuiInteractionMode::Ask,
     );
 
@@ -1755,6 +1762,7 @@ fn footer_suggests_edit_loop_actions_with_pending_proposal() {
     let output = footer_text(
         "",
         true,
+        false,
         false,
         false,
         false,
@@ -1796,6 +1804,7 @@ fn footer_suggests_approval_decision_when_apply_is_pending() {
         false,
         false,
         false,
+        false,
         TuiInteractionMode::Ask,
     );
 
@@ -1819,6 +1828,7 @@ fn footer_suggests_waiting_state_when_chat_is_in_flight() {
         false,
         false,
         true,
+        false,
         false,
         false,
         false,
@@ -1877,6 +1887,7 @@ fn footer_hints_slash_commands_while_typing_slash() {
         false,
         false,
         false,
+        false,
         TuiInteractionMode::Ask,
     );
 
@@ -1893,6 +1904,7 @@ fn footer_hints_slash_commands_while_typing_slash() {
 fn footer_does_not_show_suggestion_controls_for_multiline_slash_input() {
     let output = footer_text(
         "/help\nmore",
+        false,
         false,
         false,
         false,
@@ -1930,6 +1942,7 @@ fn footer_shows_model_route_picker_controls_when_active() {
         false,
         false,
         false,
+        false,
         TuiInteractionMode::Ask,
     );
 
@@ -1940,6 +1953,7 @@ fn footer_shows_model_route_picker_controls_when_active() {
 fn footer_shows_agent_mode_safety_hint() {
     let output = footer_text(
         "",
+        false,
         false,
         false,
         false,
@@ -1964,6 +1978,7 @@ fn footer_shows_agent_mode_safety_hint() {
 fn footer_shows_agent_plan_numbered_actions() {
     let output = footer_text(
         "",
+        false,
         false,
         false,
         false,
@@ -5523,9 +5538,10 @@ fn resume_command_and_args_parse_to_lightweight_resume() {
     let mut resume_latest = test_state("/resume latest");
     let mut resume_invalid = test_state("/resume a b");
 
+    // 引数なしは picker、引数ありは従来の即時 lightweight resume のまま。
     assert_eq!(
         prepare_tui_submit(&mut resume),
-        Some(TuiSubmit::Command(TuiCommand::Resume { target: None }))
+        Some(TuiSubmit::Command(TuiCommand::ResumePicker))
     );
     assert_eq!(
         prepare_tui_submit(&mut resume_latest),
@@ -5538,6 +5554,40 @@ fn resume_command_and_args_parse_to_lightweight_resume() {
         Some(TuiSubmit::Command(TuiCommand::Error(text)))
             if text.contains("Usage: /resume")
     ));
+}
+
+#[test]
+fn resume_command_without_args_opens_picker() {
+    let mut state = test_state("/resume");
+
+    assert_eq!(
+        prepare_tui_submit(&mut state),
+        Some(TuiSubmit::Command(TuiCommand::ResumePicker))
+    );
+}
+
+#[test]
+fn resume_latest_still_loads_immediately() {
+    let mut state = test_state("/resume latest");
+
+    assert_eq!(
+        prepare_tui_submit(&mut state),
+        Some(TuiSubmit::Command(TuiCommand::Resume {
+            target: Some("latest".to_string())
+        }))
+    );
+}
+
+#[test]
+fn resume_id_still_loads_immediately() {
+    let mut state = test_state("/resume 20260101-000000-abc123");
+
+    assert_eq!(
+        prepare_tui_submit(&mut state),
+        Some(TuiSubmit::Command(TuiCommand::Resume {
+            target: Some("20260101-000000-abc123".to_string())
+        }))
+    );
 }
 
 #[test]
@@ -5603,6 +5653,510 @@ fn resume_error_reports_reason_without_state_change() {
             if text.contains("Could not resume") && text.contains("/sessions")
     ));
     assert!(state.active_context.provider_context().is_none());
+}
+
+/// resume picker テスト用の注入候補。
+fn test_resume_candidate(index: usize) -> origin_session::ResumeCandidate {
+    origin_session::ResumeCandidate {
+        session_id: format!("20260505-01{index:02}00-aaaa{index:02}"),
+        source_path: PathBuf::from(format!("/tmp/sessions/20260505-01{index:02}00.jsonl")),
+        created_at: format!("2026-05-05T01:{index:02}:00Z"),
+        kind: "chat".to_string(),
+        intent: format!("candidate intent {index}"),
+        files: Vec::new(),
+        outcome: origin_session::ResumeOutcome::ReadOnly,
+        model: "qwen-test".to_string(),
+    }
+}
+
+/// 注入候補で picker を直接開く(FS を読まない highlight / cancel 系テスト用)。
+fn seed_resume_picker(state: &mut TuiState, count: usize) {
+    state.resume_picker = Some(ResumePicker {
+        candidates: (1..=count).map(test_resume_candidate).collect(),
+        selected: 0,
+        buffer: String::new(),
+    });
+}
+
+/// resume picker テスト用の session transcript を tmp root に書く。
+/// path 順 = 時系列になる実運用の命名(YYYY/MM/<timestamp>-<suffix>.jsonl)に合わせる。
+fn write_resume_picker_session(root: &PathBuf, index: usize) -> String {
+    let session_id = format!("20260505-01{index:02}00-aaaa{index:02}");
+    let path = root.join(format!("2026/05/{session_id}.jsonl"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        format!(
+            "{{\"type\":\"session_started\",\"session_id\":\"{session_id}\",\"created_at\":\"2026-05-05T01:{index:02}:00Z\",\"cwd\":\"/repo\"}}\n\
+             {{\"type\":\"command_started\",\"command\":\"chat\"}}\n\
+             {{\"type\":\"model_resolved\",\"model\":\"qwen\"}}\n\
+             {{\"type\":\"user_message\",\"text\":\"prompt {index}\"}}\n\
+             {{\"type\":\"session_finished\",\"status\":\"success\"}}\n"
+        ),
+    )
+    .unwrap();
+    session_id
+}
+
+#[test]
+fn resume_picker_open_with_injected_candidates_shows_seven_rows() {
+    let mut state = test_state("");
+    seed_resume_picker(&mut state, 8);
+    {
+        let picker = state.resume_picker.as_mut().unwrap();
+        picker.candidates[0].outcome = origin_session::ResumeOutcome::Applied;
+        picker.candidates[0].files = vec!["README.md".to_string(), "docs/a.md".to_string()];
+    }
+
+    let rendered = resume_picker_lines(state.resume_picker.as_ref().unwrap(), 100)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(rendered.contains("Resume from a recent session"));
+    // 7件まで番号付きで表示し、8件目は行にしない。
+    assert!(rendered.contains("1. "));
+    assert!(rendered.contains("7. "));
+    assert!(!rendered.contains("8. "));
+    assert!(rendered.contains("candidate intent 7"));
+    assert!(!rendered.contains("candidate intent 8"));
+    assert!(rendered.contains("1 more — /sessions or `origin sessions` for full history"));
+    // メタ行(種別 · 結果 · model)と read-only 契約2行。
+    assert!(rendered.contains("chat · saved README.md +1 · qwen-test"));
+    assert!(rendered.contains("chat · read-only · qwen-test"));
+    assert!(rendered.contains("Resume uses the selected session as read-only background only."));
+    assert!(rendered.contains("Nothing is restored: no proposal, no diffs, no files."));
+    // literal marker は使わない。
+    assert!(!rendered.contains('›'));
+    assert!(!rendered.contains('>'));
+
+    let footer = footer_text(
+        "",
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        TuiInteractionMode::Ask,
+    );
+    assert_eq!(footer, "Up/Down select · Enter resume · Esc cancel");
+}
+
+#[test]
+fn resume_picker_selected_row_uses_cyan_accent() {
+    let mut state = test_state("");
+    seed_resume_picker(&mut state, 3);
+    state.resume_picker.as_mut().unwrap().selected = 1;
+
+    let lines = resume_picker_lines(state.resume_picker.as_ref().unwrap(), 80);
+    // タイトル+空行の後、1候補=2行。選択行(index 1 の1行目)は cyan+bold。
+    let selected_line = &lines[2 + 2];
+    let style = first_span_style(selected_line);
+
+    assert_eq!(style.fg, Some(Color::Cyan));
+    assert!(style.add_modifier.contains(Modifier::BOLD));
+    let unselected_line = &lines[2];
+    assert_eq!(first_span_style(unselected_line).fg, None);
+}
+
+#[test]
+fn resume_picker_empty_sessions_shows_empty_state() {
+    let root = temp_dir("resume-picker-empty");
+    fs::create_dir_all(&root).unwrap();
+    let mut state = test_state("");
+
+    open_resume_picker_in(&mut state, &root);
+
+    assert!(state.resume_picker.is_none());
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text)
+            if text.contains("No saved sessions yet.")
+                && text.contains("transcripts are saved automatically")
+    )));
+    assert!(state.resumed_session.is_none());
+}
+
+#[test]
+fn resume_picker_read_error_reports_error() {
+    let root = temp_dir("resume-picker-error");
+    fs::create_dir_all(root.parent().unwrap()).unwrap();
+    // root がディレクトリではなくファイル → 一覧読み込みが失敗する状況。
+    fs::write(&root, "not a directory").unwrap();
+    let mut state = test_state("");
+
+    open_resume_picker_in(&mut state, &root);
+
+    assert!(state.resume_picker.is_none());
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Error(text) if text.contains("Could not resume")
+    )));
+}
+
+#[test]
+fn resume_picker_up_down_moves_selection_and_clamps() {
+    let mut state = test_state("");
+    seed_resume_picker(&mut state, 3);
+
+    // Up は 0 で clamp。
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Up,
+        KeyModifiers::empty()
+    ));
+    assert_eq!(state.resume_picker.as_ref().unwrap().selected, 0);
+
+    // Down ×4 は len-1 で clamp。buffer は矢印操作でクリアされる。
+    state.resume_picker.as_mut().unwrap().buffer = "1".to_string();
+    for _ in 0..4 {
+        assert!(handle_tui_input_key(
+            &mut state,
+            KeyCode::Down,
+            KeyModifiers::empty()
+        ));
+    }
+    let picker = state.resume_picker.as_ref().unwrap();
+    assert_eq!(picker.selected, 2);
+    assert!(picker.buffer.is_empty());
+}
+
+#[test]
+fn resume_picker_number_buffer_selects_candidate() {
+    let mut state = test_state("");
+    seed_resume_picker(&mut state, 7);
+
+    // `1` → selected 0、続けて `2` → buffer "12" は範囲外なので selected 不変。
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Char('1'),
+        KeyModifiers::empty()
+    ));
+    assert_eq!(state.resume_picker.as_ref().unwrap().selected, 0);
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Char('2'),
+        KeyModifiers::empty()
+    ));
+    let picker = state.resume_picker.as_ref().unwrap();
+    assert_eq!(picker.buffer, "12");
+    assert_eq!(picker.selected, 0);
+
+    // 単独の `3` は selected=2。bare digit で resume は実行されない。
+    state.resume_picker.as_mut().unwrap().buffer.clear();
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Char('3'),
+        KeyModifiers::empty()
+    ));
+    assert_eq!(state.resume_picker.as_ref().unwrap().selected, 2);
+    assert!(state.resume_picker.is_some());
+    assert!(state.resumed_session.is_none());
+}
+
+#[test]
+fn resume_picker_backspace_edits_number_buffer() {
+    let mut state = test_state("");
+    seed_resume_picker(&mut state, 7);
+
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Char('1'),
+        KeyModifiers::empty()
+    ));
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Char('2'),
+        KeyModifiers::empty()
+    ));
+    assert_eq!(state.resume_picker.as_ref().unwrap().buffer, "12");
+
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Backspace,
+        KeyModifiers::empty()
+    ));
+    let picker = state.resume_picker.as_ref().unwrap();
+    assert_eq!(picker.buffer, "1");
+    assert_eq!(picker.selected, 0);
+    // Backspace は composer 入力を消さない(picker がキーを占有している)。
+    assert_eq!(state.input, "");
+    assert!(state.resumed_session.is_none());
+}
+
+#[test]
+fn resume_picker_enter_loads_selected_session_background() {
+    let root = temp_dir("resume-picker-enter");
+    let older = write_resume_picker_session(&root, 1);
+    let newer = write_resume_picker_session(&root, 2);
+    let mut state = test_state("");
+
+    open_resume_picker_in(&mut state, &root);
+    let picker = state.resume_picker.as_ref().expect("picker should open");
+    assert_eq!(picker.candidates.len(), 2);
+    assert_eq!(picker.candidates[0].session_id, newer);
+
+    // Down で2番目(older)を選び、選択候補を background として取り込む。
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Down,
+        KeyModifiers::empty()
+    ));
+    apply_selected_resume_candidate_in(&mut state, &root);
+
+    assert!(state.resume_picker.is_none());
+    let resumed = state
+        .resumed_session
+        .as_ref()
+        .expect("selected session should be resumed");
+    assert_eq!(resumed.session_id, older);
+    assert_eq!(
+        state.status.resumed_session.as_deref(),
+        Some(older.as_str())
+    );
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text)
+            if text.contains(&format!("Resumed from session {older}"))
+                && text.contains("background only")
+    )));
+}
+
+#[test]
+fn resume_picker_escape_cancels_without_state_change() {
+    let mut state = test_state("draft input");
+    state.messages.push(TuiMessage::User("hello".to_string()));
+    seed_resume_picker(&mut state, 3);
+    let messages_before = state.messages.clone();
+
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Esc,
+        KeyModifiers::empty()
+    ));
+
+    assert!(state.resume_picker.is_none());
+    // resume_picker 以外は一切変化しない(messages も不変)。
+    assert_eq!(state.messages, messages_before);
+    assert!(state.resumed_session.is_none());
+    assert!(state.pending_proposal.is_none());
+    assert!(state.pending_apply.is_none());
+    assert!(state.proposal_review.is_none());
+    assert!(state.agent_generation.is_none());
+    assert!(state.write_progress.is_none());
+    assert!(state.chat_in_flight.is_none());
+    assert!(state.agent_plan_in_flight.is_none());
+    assert_eq!(state.input, "draft input");
+    assert!(state.active_context.provider_context().is_none());
+}
+
+#[test]
+fn resume_picker_highlight_does_not_touch_resumed_session() {
+    let mut state = test_state("");
+    seed_resume_picker(&mut state, 5);
+
+    for key in [
+        KeyCode::Down,
+        KeyCode::Down,
+        KeyCode::Up,
+        KeyCode::Char('4'),
+        KeyCode::Char('9'),
+        KeyCode::Backspace,
+        KeyCode::Char('2'),
+    ] {
+        assert!(handle_tui_input_key(&mut state, key, KeyModifiers::empty()));
+    }
+
+    assert!(state.resume_picker.is_some());
+    assert!(state.resumed_session.is_none());
+    assert!(state.status.resumed_session.is_none());
+    assert!(state.messages.is_empty());
+}
+
+#[test]
+fn resume_picker_refused_while_review_or_apply_pending() {
+    // proposal review(write permission gate)表示中は開かない。
+    let mut review_state = test_state("");
+    review_state.pending_proposal = Some(test_pending_proposal());
+    review_state.proposal_review = Some(TuiProposalReview {
+        mode: TuiProposalReviewMode::Review,
+        origin: TuiProposalReviewOrigin::Manual,
+        apply_status: TuiProposalApplyStatus::Available,
+        selected_action: 0,
+    });
+    handle_tui_command(&mut review_state, TuiCommand::ResumePicker);
+    assert!(review_state.resume_picker.is_none());
+    assert!(review_state.pending_proposal.is_some());
+    assert!(review_state.proposal_review.is_some());
+    assert!(review_state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Error(text) if text.contains("Resume picker is unavailable")
+    )));
+
+    // Agent plan 保留中も開かない。
+    let mut plan_state = test_state("");
+    plan_state.pending_agent_existing_edit_plan = Some(PendingAgentExistingEditPlan {
+        original_prompt: "README を直して".to_string(),
+        target_path: "README.md".to_string(),
+        read_context_description: "README.md".to_string(),
+    });
+    handle_tui_command(&mut plan_state, TuiCommand::ResumePicker);
+    assert!(plan_state.resume_picker.is_none());
+    assert!(plan_state.pending_agent_existing_edit_plan.is_some());
+    assert!(plan_state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Error(text) if text.contains("Resume picker is unavailable")
+    )));
+
+    // Agent planning が in-flight の間も開かない。
+    let mut in_flight_state = test_state("");
+    let (_sender, receiver) = mpsc::channel();
+    in_flight_state.agent_plan_in_flight = Some(TuiAgentPlanInFlight {
+        request_id: 1,
+        receiver,
+        input: "plan".to_string(),
+        active_context: None,
+        warning_shown: false,
+        started_at: Instant::now(),
+    });
+    handle_tui_command(&mut in_flight_state, TuiCommand::ResumePicker);
+    assert!(in_flight_state.resume_picker.is_none());
+    assert!(in_flight_state.agent_plan_in_flight.is_some());
+
+    // Preview 生成中は Esc の interrupt と picker close の優先順が衝突するため開かない。
+    let mut generation_state = test_state("");
+    let _sender = set_agent_generation_in_flight(&mut generation_state);
+    handle_tui_command(&mut generation_state, TuiCommand::ResumePicker);
+    assert!(generation_state.resume_picker.is_none());
+    assert!(generation_state.agent_generation.is_some());
+    assert!(generation_state.agent_propose_in_flight.is_some());
+
+    // 書き込み進行表示中も開かない。
+    let mut write_state = test_state("");
+    write_state.write_progress = Some(TuiWriteProgress {
+        target_summary: "README.md".to_string(),
+        started_at: Instant::now(),
+    });
+    handle_tui_command(&mut write_state, TuiCommand::ResumePicker);
+    assert!(write_state.resume_picker.is_none());
+    assert!(write_state.write_progress.is_some());
+
+    // model route picker 表示中も開かない(単一 overlay の二重防御)。
+    let mut picker_state = test_state("");
+    picker_state.model_route_picker = Some(ModelRoutePicker {
+        routes: vec![test_model_route("lmstudio", "qwen-test", true)],
+        selected: 0,
+        numeric_buffer: String::new(),
+    });
+    handle_tui_command(&mut picker_state, TuiCommand::ResumePicker);
+    assert!(picker_state.resume_picker.is_none());
+    assert!(picker_state.model_route_picker.is_some());
+}
+
+#[test]
+fn resume_picker_esc_dispatch_order_closes_picker_first() {
+    let mut state = test_state("");
+    seed_resume_picker(&mut state, 2);
+
+    // 1回目の Esc は picker に消費され、picker だけが閉じる(アプリ終了に落ちない)。
+    assert!(handle_tui_input_key(
+        &mut state,
+        KeyCode::Esc,
+        KeyModifiers::empty()
+    ));
+    assert!(state.resume_picker.is_none());
+    assert!(state.messages.is_empty());
+
+    // picker が閉じた後の Esc は composer では消費されない(run loop の終了 dispatch へ落ちる)。
+    assert!(!handle_tui_input_key(
+        &mut state,
+        KeyCode::Esc,
+        KeyModifiers::empty()
+    ));
+}
+
+#[test]
+fn resume_picker_renders_relative_time_labels() {
+    // 固定 now = 2026-05-05T01:23:45Z(SystemTime 注入。実時計に依存しない)。
+    let now = UNIX_EPOCH + Duration::from_secs(1_777_944_225);
+
+    assert_eq!(relative_time_label("2026-05-05T01:00:00Z", now), "23m ago");
+    assert_eq!(relative_time_label("2026-05-04T20:23:45Z", now), "5h ago");
+    assert_eq!(
+        relative_time_label("2026-05-04T01:23:45Z", now),
+        "yesterday"
+    );
+    assert_eq!(relative_time_label("2026-05-02T01:23:45Z", now), "3d ago");
+    assert_eq!(
+        relative_time_label("2026-04-20T01:23:45Z", now),
+        "2026-04-20"
+    );
+    assert_eq!(relative_time_label("garbage-timestamp", now), "garbage-ti");
+}
+
+#[test]
+fn resume_picker_does_not_restore_pending_proposal() {
+    let root = temp_dir("resume-picker-no-restore");
+    // 過去 session が diff / apply を含んでいても、select は background 取り込みのみ。
+    let session_id = write_resume_picker_session(&root, 1);
+    let mut state = test_state("");
+
+    open_resume_picker_in(&mut state, &root);
+    apply_selected_resume_candidate_in(&mut state, &root);
+
+    assert_eq!(
+        state
+            .resumed_session
+            .as_ref()
+            .map(|resumed| resumed.session_id.as_str()),
+        Some(session_id.as_str())
+    );
+    assert!(state.pending_proposal.is_none());
+    assert!(state.pending_apply.is_none());
+    assert!(state.proposal_review.is_none());
+    assert!(state.agent_generation.is_none());
+    assert!(state.write_progress.is_none());
+    assert!(state.chat_in_flight.is_none());
+}
+
+#[test]
+fn resume_picker_clear_drops_resumed_background_from_picker() {
+    let root = temp_dir("resume-picker-clear");
+    write_resume_picker_session(&root, 1);
+    let mut state = test_state("");
+    open_resume_picker_in(&mut state, &root);
+    apply_selected_resume_candidate_in(&mut state, &root);
+    assert!(state.resumed_session.is_some());
+
+    handle_tui_command(&mut state, TuiCommand::Clear);
+
+    assert!(state.resumed_session.is_none());
+    assert!(state.status.resumed_session.is_none());
+}
+
+#[test]
+fn resume_picker_visible_lines_keep_selected_candidate_visible() {
+    let mut state = test_state("");
+    seed_resume_picker(&mut state, 7);
+    state.resume_picker.as_mut().unwrap().selected = 6;
+
+    let rendered = resume_picker_visible_lines(state.resume_picker.as_ref().unwrap(), 80, 6)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(rendered.contains("candidate intent 7"));
+    assert!(rendered.lines().count() <= 6);
 }
 
 #[test]

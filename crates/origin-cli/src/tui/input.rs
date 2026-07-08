@@ -26,6 +26,41 @@ pub(super) fn handle_tui_input_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> bool {
+    // resume picker 表示中は、そのキー(数字/矢印/Enter/Esc)を picker 操作に占有する。
+    // ここでの選択・Enter は read-only な background 取り込みの選択であって、
+    // write 承認ではない(model route picker と同じ文法)。
+    if state.resume_picker.is_some() {
+        return match code {
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                resume_picker_push_digit(state, c);
+                true
+            }
+            KeyCode::Backspace => {
+                resume_picker_pop_digit(state);
+                true
+            }
+            KeyCode::Down => {
+                clear_resume_picker_buffer(state);
+                move_resume_picker_selection(state, 1);
+                true
+            }
+            KeyCode::Up => {
+                clear_resume_picker_buffer(state);
+                move_resume_picker_selection(state, -1);
+                true
+            }
+            KeyCode::Enter => {
+                apply_selected_resume_candidate(state);
+                true
+            }
+            KeyCode::Esc => {
+                close_resume_picker(state);
+                true
+            }
+            _ => false,
+        };
+    }
+
     // model route picker 表示中は、そのキー(数字/矢印/Enter/Esc)を picker 操作に占有する。
     if state.model_route_picker.is_some() {
         return match code {
@@ -266,6 +301,59 @@ pub(super) fn accept_slash_suggestion(state: &mut TuiState) -> bool {
     state.input_cursor = state.input.len();
     reset_suggestion_selection(state);
     true
+}
+
+/// resume picker の選択行を delta だけ動かし、範囲内に clamp する(wrap しない)。
+pub(super) fn move_resume_picker_selection(state: &mut TuiState, delta: isize) {
+    let Some(picker) = state.resume_picker.as_mut() else {
+        return;
+    };
+    if picker.candidates.is_empty() {
+        picker.selected = 0;
+        return;
+    }
+
+    let max = picker.candidates.len() - 1;
+    picker.selected = if delta.is_negative() {
+        picker
+            .selected
+            .saturating_sub(delta.unsigned_abs())
+            .min(max)
+    } else {
+        picker.selected.saturating_add(delta as usize).min(max)
+    };
+}
+
+/// resume picker の数字入力バッファを空にする(矢印操作に切り替えた時など)。
+pub(super) fn clear_resume_picker_buffer(state: &mut TuiState) {
+    if let Some(picker) = state.resume_picker.as_mut() {
+        picker.buffer.clear();
+    }
+}
+
+/// 数字キーをバッファに積み、1..=候補数 の数値なら選択へ反映する。
+/// 範囲外バッファは選択を変えない(bare digit で resume は実行されない)。
+pub(super) fn resume_picker_push_digit(state: &mut TuiState, digit: char) {
+    if let Some(picker) = state.resume_picker.as_mut() {
+        picker.buffer.push(digit);
+        apply_resume_picker_buffer(picker);
+    }
+}
+
+/// バッファ末尾の数字を1つ削り、選択を再計算する(Backspace)。
+pub(super) fn resume_picker_pop_digit(state: &mut TuiState) {
+    if let Some(picker) = state.resume_picker.as_mut() {
+        picker.buffer.pop();
+        apply_resume_picker_buffer(picker);
+    }
+}
+
+/// 数字バッファを「候補の n 番目」として解釈し selected を更新する。
+fn apply_resume_picker_buffer(picker: &mut ResumePicker) {
+    if let Some(index) = style::selection_buffer_highlight(&picker.buffer, picker.candidates.len())
+    {
+        picker.selected = index;
+    }
 }
 
 /// runtime から model route 一覧を集めて picker を開く入口。
