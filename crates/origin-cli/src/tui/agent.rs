@@ -582,13 +582,9 @@ pub(super) fn record_agent_planner_action_metadata(
 /// これは action/path 判断の文脈のみに使われる。permission や approval requirements は
 /// 一切変わらず、planner の出力は従来どおり origin の validation と save approval gate を通る。
 /// 全て無ければ None(prompt に background 節を足さない)。
-pub(super) fn build_agent_planner_background(
-    workspace_instructions: &WorkspaceInstructions,
-    user_memory: &UserMemory,
-    resumed_session: Option<&TuiResumedSession>,
-) -> Option<String> {
+pub(super) fn build_agent_planner_background(background: &ChatBackground) -> Option<String> {
     let mut output = String::new();
-    if let Some(body) = workspace_instructions.body() {
+    if let Some(body) = background.workspace_instructions.body() {
         output.push_str("<workspace_instructions path=\"ORIGIN.md\">\n");
         output.push_str(body);
         if !body.ends_with('\n') {
@@ -596,7 +592,7 @@ pub(super) fn build_agent_planner_background(
         }
         output.push_str("</workspace_instructions>\n");
     }
-    if let Some(body) = user_memory.body() {
+    if let Some(body) = background.user_memory.body() {
         output.push_str("<user_memory path=\"memory.md\">\n");
         output.push_str(body);
         if !body.ends_with('\n') {
@@ -604,11 +600,11 @@ pub(super) fn build_agent_planner_background(
         }
         output.push_str("</user_memory>\n");
     }
-    if let Some(resumed) = resumed_session {
+    if let Some(resumed) = background.resumed_session.as_ref() {
         let context = resumed.context.trim();
         if !context.is_empty() {
             output.push_str("<resumed_session_background session=\"");
-            output.push_str(&resumed.session_id);
+            output.push_str(&resumed.source_session_id);
             output.push_str("\">\n");
             output.push_str(context);
             if !context.ends_with('\n') {

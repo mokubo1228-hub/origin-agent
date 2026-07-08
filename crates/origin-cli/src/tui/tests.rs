@@ -16,6 +16,7 @@ use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 
 use super::style::{rail_color, PanelTone, RAIL};
+use super::test_pending_apply_fixture;
 use super::{
     accept_slash_suggestion, apply_non_git_new_file_at_root, apply_tui_resume_result,
     ask_file_context_from_prompt_in_workspace, block_submit_while_agent_plan_in_flight,
@@ -61,6 +62,10 @@ use super::{
 use super::{
     apply_selected_resume_candidate_in, open_resume_picker_in, relative_time_label,
     resume_picker_lines, resume_picker_visible_lines, ResumePicker,
+};
+use super::{
+    collapse_pending_flows, has_blocking_agent_flow, is_any_overlay_open,
+    is_any_provider_call_in_flight, is_permission_gate_active, ChatBackground,
 };
 use super::{TuiResumedSession, UserMemory};
 use crate::chat_workflow::{ChatFileContext, ChatWorkflowResult, WorkspaceInstructions};
@@ -653,14 +658,18 @@ fn agent_planner_background_bundles_instructions_memory_and_resume() {
         sha256: "def".to_string(),
         body: "Prefers concise answers.".to_string(),
     };
-    let resumed = TuiResumedSession {
-        session_id: "20260101-000000-abc123".to_string(),
+    let resumed = crate::chat_workflow::ChatResumedSession {
+        source_session_id: "20260101-000000-abc123".to_string(),
         source_path: "/tmp/20260101-000000-abc123.jsonl".to_string(),
         context: "Previous session context".to_string(),
     };
 
-    let background = build_agent_planner_background(&instructions, &memory, Some(&resumed))
-        .expect("background should be built");
+    let background = build_agent_planner_background(&ChatBackground {
+        workspace_instructions: instructions,
+        user_memory: memory,
+        resumed_session: Some(resumed),
+    })
+    .expect("background should be built");
 
     assert!(background.contains("<workspace_instructions path=\"ORIGIN.md\">"));
     assert!(background.contains("Prefer docs/ for summaries."));
@@ -670,10 +679,7 @@ fn agent_planner_background_bundles_instructions_memory_and_resume() {
     assert!(background.contains("Previous session context"));
 
     // 全部無ければ background 自体を作らない。
-    assert!(
-        build_agent_planner_background(&WorkspaceInstructions::None, &UserMemory::None, None)
-            .is_none()
-    );
+    assert!(build_agent_planner_background(&ChatBackground::none()).is_none());
 }
 
 #[test]
@@ -6060,6 +6066,137 @@ fn resume_picker_refused_while_review_or_apply_pending() {
     handle_tui_command(&mut picker_state, TuiCommand::ResumePicker);
     assert!(picker_state.resume_picker.is_none());
     assert!(picker_state.model_route_picker.is_some());
+}
+
+#[test]
+fn resume_picker_refused_while_apply_approval_pending() {
+    // A1 で fixture が無く未テストだった分岐: pending_apply(y/n 承認プロンプト)中は
+    // picker を開かない。fixture は状態構築のみで、承認経路には触れない(FD-5)。
+    let root = temp_dir("resume-picker-apply-pending");
+    fs::create_dir_all(&root).unwrap();
+    let session = SessionWriter::create_in(
+        root.join("sessions"),
+        root.clone(),
+        "apply",
+        UNIX_EPOCH + Duration::from_secs(1_777_944_225),
+    )
+    .unwrap();
+    let mut state = test_state("");
+    state.pending_apply = Some(test_pending_apply_fixture(session, test_pending_proposal()));
+
+    handle_tui_command(&mut state, TuiCommand::ResumePicker);
+
+    assert!(state.resume_picker.is_none());
+    assert!(state.pending_apply.is_some());
+    assert!(is_permission_gate_active(&state));
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Error(text) if text.contains("Resume picker is unavailable")
+    )));
+}
+
+#[test]
+fn guard_predicates_reflect_state_flags() {
+    // 何も立っていない初期状態では全 predicate が false。
+    let mut state = test_state("");
+    assert!(!is_permission_gate_active(&state));
+    assert!(!has_blocking_agent_flow(&state));
+    assert!(!is_any_overlay_open(&state));
+    assert!(!is_any_provider_call_in_flight(&state));
+
+    // permission gate: proposal review(pending + review の両立)で立つ。
+    state.pending_proposal = Some(test_pending_proposal());
+    assert!(!is_permission_gate_active(&state));
+    state.proposal_review = Some(TuiProposalReview {
+        mode: TuiProposalReviewMode::Review,
+        origin: TuiProposalReviewOrigin::Manual,
+        apply_status: TuiProposalApplyStatus::Available,
+        selected_action: 0,
+    });
+    assert!(is_permission_gate_active(&state));
+
+    // agent flow: 保留 plan / plan worker / propose worker / generation のどれでも立つ。
+    let mut plan_state = test_state("");
+    plan_state.pending_agent_existing_edit_plan = Some(PendingAgentExistingEditPlan {
+        original_prompt: "README を直して".to_string(),
+        target_path: "README.md".to_string(),
+        read_context_description: "README.md".to_string(),
+    });
+    assert!(has_blocking_agent_flow(&plan_state));
+    let mut generation_state = test_state("");
+    let _sender = set_agent_generation_in_flight(&mut generation_state);
+    assert!(has_blocking_agent_flow(&generation_state));
+    assert!(is_any_provider_call_in_flight(&generation_state));
+
+    // overlay: どちらの picker でも立つ。
+    let mut overlay_state = test_state("");
+    seed_resume_picker(&mut overlay_state, 1);
+    assert!(is_any_overlay_open(&overlay_state));
+
+    // provider call: chat worker でも立つ。
+    let mut chat_state = test_state("");
+    let (_chat_sender, receiver) = mpsc::channel();
+    chat_state.chat_in_flight = Some(TuiChatInFlight {
+        receiver,
+        warning_shown: false,
+        started_at: Instant::now(),
+    });
+    assert!(is_any_provider_call_in_flight(&chat_state));
+    // chat 単独では gate / agent flow / overlay のどれでもない。
+    assert!(!is_permission_gate_active(&chat_state));
+    assert!(!has_blocking_agent_flow(&chat_state));
+    assert!(!is_any_overlay_open(&chat_state));
+}
+
+#[test]
+fn collapse_pending_flows_clears_pending_set_and_reports() {
+    let mut state = test_state("");
+    state.pending_proposal = Some(test_pending_proposal());
+    state.proposal_review = Some(TuiProposalReview {
+        mode: TuiProposalReviewMode::Review,
+        origin: TuiProposalReviewOrigin::Manual,
+        apply_status: TuiProposalApplyStatus::Available,
+        selected_action: 0,
+    });
+    let (_plan_sender, plan_receiver) = mpsc::channel();
+    state.agent_plan_in_flight = Some(TuiAgentPlanInFlight {
+        request_id: 1,
+        receiver: plan_receiver,
+        input: "plan".to_string(),
+        active_context: None,
+        warning_shown: false,
+        started_at: Instant::now(),
+    });
+    let _propose_sender = set_agent_generation_in_flight(&mut state);
+    let (_chat_sender, chat_receiver) = mpsc::channel();
+    state.chat_in_flight = Some(TuiChatInFlight {
+        receiver: chat_receiver,
+        warning_shown: false,
+        started_at: Instant::now(),
+    });
+    state.resumed_session = Some(TuiResumedSession {
+        session_id: "20260101-000000-abc123".to_string(),
+        source_path: "/tmp/session.jsonl".to_string(),
+        context: "Previous session context".to_string(),
+    });
+
+    let cleared = collapse_pending_flows(&mut state);
+
+    assert!(cleared);
+    assert!(state.pending_proposal.is_none());
+    assert!(state.pending_apply.is_none());
+    assert!(state.proposal_review.is_none());
+    assert!(state.agent_plan_in_flight.is_none());
+    assert!(state.agent_generation.is_none());
+    assert!(state.agent_propose_in_flight.is_none());
+    // chat worker は畳まない(loading は chat 進行に合わせて再計算される)。
+    assert!(state.chat_in_flight.is_some());
+    assert!(state.loading);
+    // resumed background は model/provider 切替では破棄しない(/clear だけが消す)。
+    assert!(state.resumed_session.is_some());
+
+    // pending proposal が無ければ false を返す(通知の出し分け)。
+    assert!(!collapse_pending_flows(&mut state));
 }
 
 #[test]

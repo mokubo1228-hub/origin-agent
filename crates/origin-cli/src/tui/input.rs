@@ -483,13 +483,7 @@ pub(super) fn apply_selected_model_route(state: &mut TuiState) {
         .set_model_route(&route.provider_id, &route.model_id)
     {
         Ok(_) => {
-            let cleared_pending = state.pending_proposal.take().is_some();
-            state.pending_apply = None;
-            state.proposal_review = None;
-            state.agent_plan_in_flight = None;
-            state.loading = state.chat_in_flight.is_some();
-            state.agent_generation = None;
-            state.agent_propose_in_flight = None;
+            let cleared_pending = collapse_pending_flows(state);
             refresh_status(state);
             state
                 .messages
@@ -609,11 +603,7 @@ pub(super) fn prepare_tui_submit(state: &mut TuiState) -> Option<TuiSubmit> {
     if state.interaction_mode == TuiInteractionMode::Agent {
         state.loading = true;
         pin_chat_to_latest(state);
-        let background = build_agent_planner_background(
-            &state.workspace_instructions,
-            &state.user_memory,
-            state.resumed_session.as_ref(),
-        );
+        let background = build_agent_planner_background(&chat_background_from_state(state));
         return Some(TuiSubmit::AgentPlan(TuiAgentPlanSubmit {
             input,
             active_context,
@@ -684,6 +674,35 @@ pub(super) fn has_pending_agent_plan(state: &TuiState) -> bool {
 /// pending proposal と review panel が両方立っている = write permission gate を表示中か。
 pub(super) fn is_proposal_review_active(state: &TuiState) -> bool {
     state.pending_proposal.is_some() && state.proposal_review.is_some()
+}
+
+/// write permission gate(Proposal review の y/n、または apply 承認プロンプト)が
+/// 画面を占有しているか。guard の正の入口(FD-2)— gate 系 state が増えたらここに足す。
+pub(super) fn is_permission_gate_active(state: &TuiState) -> bool {
+    is_proposal_review_active(state) || state.pending_apply.is_some()
+}
+
+/// Agent の plan / review / preview 生成フローのいずれかが進行・保留中か。
+/// guard の正の入口(FD-2)。resume picker guard と、新規 guard(CP1 §1 等)がここを使う。
+pub(super) fn has_blocking_agent_flow(state: &TuiState) -> bool {
+    has_pending_agent_plan(state)
+        || state.agent_plan_in_flight.is_some()
+        || state.agent_propose_in_flight.is_some()
+        || state.agent_generation.is_some()
+}
+
+/// 単一 overlay(picker 系)が開いているか。picker が増えたらここだけ伸ばす(FD-2)。
+pub(super) fn is_any_overlay_open(state: &TuiState) -> bool {
+    state.model_route_picker.is_some() || state.resume_picker.is_some()
+}
+
+/// provider 往復 worker のいずれかが進行中か。guard の正の入口(FD-2)。
+/// 現行コードに同一集合の既存 guard は無く、新規 guard(CP1 §1 等)がここを使う。
+#[allow(dead_code)]
+pub(super) fn is_any_provider_call_in_flight(state: &TuiState) -> bool {
+    state.chat_in_flight.is_some()
+        || state.agent_plan_in_flight.is_some()
+        || state.agent_propose_in_flight.is_some()
 }
 
 /// proposal review が revision feedback 入力モードか。この間の Enter は書き込みではなく送信。

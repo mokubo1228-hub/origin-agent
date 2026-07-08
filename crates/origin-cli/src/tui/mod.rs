@@ -43,8 +43,9 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::chat_workflow::{
-    self, ChatFileContext, ChatFileContextRecord, ChatPromptMode, ChatResumedSession,
-    ChatWorkflowResult, ChatWorkspaceOverviewContext, UserMemory, WorkspaceInstructions,
+    self, ChatBackground, ChatFileContext, ChatFileContextRecord, ChatPromptMode,
+    ChatResumedSession, ChatWorkflowResult, ChatWorkspaceOverviewContext, UserMemory,
+    WorkspaceInstructions,
 };
 use crate::edit_workflow::{pending_proposal_snapshot, PendingCheckState, PendingProposal};
 use crate::runtime::{auth_label, RuntimeState, MODEL_SOURCE_UNAVAILABLE};
@@ -75,7 +76,7 @@ use self::edit_flow::{
     format_tui_apply_check_failure, format_tui_apply_failure, format_tui_apply_rejected,
     format_tui_apply_success, format_tui_check_failure, format_tui_check_success,
     format_tui_pending_diff, format_tui_propose_error, format_tui_propose_result,
-    prepare_non_git_new_file_apply_at_root, record_tui_pending_context,
+    prepare_non_git_new_file_apply_at_root, record_tui_pending_context, test_pending_apply_fixture,
 };
 use self::edit_flow::{
     finish_tui_agent_propose_result, format_tui_clear_result, handle_tui_apply_decision,

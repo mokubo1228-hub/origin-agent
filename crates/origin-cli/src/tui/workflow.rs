@@ -31,13 +31,7 @@ pub(super) fn handle_tui_command(state: &mut TuiState, command: TuiCommand) {
             };
             match result {
                 Ok(()) => {
-                    let cleared_pending = state.pending_proposal.take().is_some();
-                    state.pending_apply = None;
-                    state.proposal_review = None;
-                    state.agent_plan_in_flight = None;
-                    state.loading = state.chat_in_flight.is_some();
-                    state.agent_generation = None;
-                    state.agent_propose_in_flight = None;
+                    let cleared_pending = collapse_pending_flows(state);
                     refresh_status(state);
                     state
                         .messages
@@ -63,13 +57,7 @@ pub(super) fn handle_tui_command(state: &mut TuiState, command: TuiCommand) {
             .push(TuiMessage::Action(tui_provider_list(&state.runtime))),
         TuiCommand::ProviderSet(provider_id) => match state.runtime.set_provider(&provider_id) {
             Ok(_) => {
-                let cleared_pending = state.pending_proposal.take().is_some();
-                state.pending_apply = None;
-                state.proposal_review = None;
-                state.agent_plan_in_flight = None;
-                state.loading = state.chat_in_flight.is_some();
-                state.agent_generation = None;
-                state.agent_propose_in_flight = None;
+                let cleared_pending = collapse_pending_flows(state);
                 refresh_status(state);
                 state
                     .messages
@@ -119,14 +107,8 @@ pub(super) fn handle_tui_command(state: &mut TuiState, command: TuiCommand) {
         TuiCommand::Check => run_tui_check(state),
         TuiCommand::Apply => run_tui_apply(state),
         TuiCommand::Clear => {
-            let cleared_pending = state.pending_proposal.take().is_some();
+            let cleared_pending = collapse_pending_flows(state);
             state.resumed_session = None;
-            state.pending_apply = None;
-            state.proposal_review = None;
-            state.agent_plan_in_flight = None;
-            state.loading = state.chat_in_flight.is_some();
-            state.agent_generation = None;
-            state.agent_propose_in_flight = None;
             state.write_progress = None;
             state.result_panel = None;
             state.pending_agent_existing_edit_plan = None;
@@ -150,6 +132,22 @@ pub(super) fn handle_tui_command(state: &mut TuiState, command: TuiCommand) {
         ))),
     }
     pin_chat_to_latest(state);
+}
+
+/// model / provider 切替で宙に浮く pending 一式を畳む共通コア(FD-2)。
+/// 戻り値 = pending proposal を破棄したか(切替通知の出し分けに使う)。
+/// `/clear` と interrupt 系はこれに加えて resumed_session / write_progress /
+/// result_panel / agent plan 群 / messages なども畳む — その追加分は各呼び出し側が
+/// 明示的に持つ(差分は仕様であり漏れではない)。
+pub(super) fn collapse_pending_flows(state: &mut TuiState) -> bool {
+    let cleared_pending = state.pending_proposal.take().is_some();
+    state.pending_apply = None;
+    state.proposal_review = None;
+    state.agent_plan_in_flight = None;
+    state.loading = state.chat_in_flight.is_some();
+    state.agent_generation = None;
+    state.agent_propose_in_flight = None;
+    cleared_pending
 }
 
 /// Ask ⇄ Agent を反転する薄いラッパ。実際の遷移と防御は set_tui_mode に委譲する。
@@ -227,23 +225,33 @@ pub(super) fn finish_chat_submit(state: &mut TuiState, result: Result<ChatWorkfl
     pin_chat_to_latest(state);
 }
 
+/// TuiState の持続 background 一式を ChatBackground に束ねる(FD-3)。
+/// chat worker と Agent planner が同じ束を使う。TuiResumedSession → ChatResumedSession の
+/// 変換もここに集約する(新しい持続 source はこの関数と ChatBackground に足す)。
+pub(super) fn chat_background_from_state(state: &TuiState) -> ChatBackground {
+    ChatBackground {
+        workspace_instructions: state.workspace_instructions.clone(),
+        user_memory: state.user_memory.clone(),
+        resumed_session: state
+            .resumed_session
+            .as_ref()
+            .map(|resumed| ChatResumedSession {
+                source_session_id: resumed.session_id.clone(),
+                source_path: resumed.source_path.clone(),
+                context: resumed.context.clone(),
+            }),
+    }
+}
+
 /// chat の provider 往復を background thread に逃がす。runtime を clone して worker に
 /// 渡し、結果は channel 経由で受ける(main state は in_flight ハンドルだけ持ち、UI を塞がない)。
 pub(super) fn start_tui_chat(state: &mut TuiState, submit: TuiChatSubmit) {
     let (sender, receiver) = mpsc::channel();
     let mut runtime = state.runtime.clone();
-    let workspace_instructions = state.workspace_instructions.clone();
-    let user_memory = state.user_memory.clone();
-    let resumed_session = state.resumed_session.clone();
+    let background = chat_background_from_state(state);
 
     thread::spawn(move || {
-        let result = run_tui_chat(
-            &mut runtime,
-            submit,
-            &workspace_instructions,
-            &user_memory,
-            resumed_session.as_ref(),
-        );
+        let result = run_tui_chat(&mut runtime, submit, &background);
         let _ = sender.send(TuiChatWorkerResult { runtime, result });
     });
 
@@ -546,16 +554,9 @@ pub(super) fn format_tui_agent_plan_in_progress() -> String {
 pub(super) fn run_tui_chat(
     runtime: &mut RuntimeState,
     submit: TuiChatSubmit,
-    workspace_instructions: &WorkspaceInstructions,
-    user_memory: &UserMemory,
-    resumed_session: Option<&TuiResumedSession>,
+    background: &ChatBackground,
 ) -> Result<ChatWorkflowResult, String> {
     runtime.ensure_model_for_chat()?;
-    let resumed = resumed_session.map(|resumed| ChatResumedSession {
-        source_session_id: resumed.session_id.clone(),
-        source_path: resumed.source_path.clone(),
-        context: resumed.context.clone(),
-    });
     chat_workflow::run_chat_with_context_for_mode(
         runtime,
         &submit.prompt,
@@ -563,9 +564,7 @@ pub(super) fn run_tui_chat(
         submit.file_context_records,
         submit.workspace_overview,
         submit.active_context.as_deref(),
-        Some(workspace_instructions),
-        Some(user_memory),
-        resumed.as_ref(),
+        background,
         submit.prompt_mode,
     )
 }
@@ -597,12 +596,8 @@ pub(super) fn open_resume_picker_in(state: &mut TuiState, root: &Path) {
 /// chat_in_flight は許可する(resume background は次リクエストから効くだけで、
 /// 進行中リクエストには影響しない)。
 fn refuse_resume_picker_if_pending(state: &mut TuiState) -> bool {
-    if is_proposal_review_active(state)
-        || state.pending_apply.is_some()
-        || has_pending_agent_plan(state)
-        || state.agent_plan_in_flight.is_some()
-        || state.agent_generation.is_some()
-        || state.agent_propose_in_flight.is_some()
+    if is_permission_gate_active(state)
+        || has_blocking_agent_flow(state)
         || state.write_progress.is_some()
         || state.model_route_picker.is_some()
     {

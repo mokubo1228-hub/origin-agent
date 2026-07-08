@@ -936,8 +936,7 @@ pub(super) fn composer_placeholder(state: &TuiState) -> &'static str {
         "Revision feedback"
     } else if state.pending_agent_new_file_override {
         "New relative output path"
-    } else if state.model_route_picker.is_some()
-        || state.resume_picker.is_some()
+    } else if is_any_overlay_open(state)
         || is_proposal_apply_blocked(state)
         || is_proposal_review_active(state)
         || has_pending_agent_plan(state)

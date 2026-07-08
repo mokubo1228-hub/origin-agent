@@ -38,6 +38,23 @@ pub(super) struct TuiPendingApply {
     pending: PendingProposal,
 }
 
+/// テスト専用 fixture(FD-5): private field の TuiPendingApply を構築する。
+/// 「pending_apply が立っている状態」を作るだけで、check・承認・書き込みの経路には
+/// 一切触れない(gate 迂回 = F-5 には該当しない。承認判定は従来どおり
+/// handle_tui_apply_decision / run_tui_proposal_review_apply だけが行う)。
+#[cfg(test)]
+pub(super) fn test_pending_apply_fixture(
+    session: SessionWriter,
+    pending: PendingProposal,
+) -> TuiPendingApply {
+    let session_path = session.path().display().to_string();
+    TuiPendingApply {
+        session,
+        session_path,
+        pending,
+    }
+}
+
 /// Agent が preview 生成を依頼する単位。既存ファイル更新か新規作成かで分け、
 /// どちらも単一ターゲット。新規は read-only の参照 context を一緒に運ぶ。
 #[derive(Clone, Debug, Eq, PartialEq)]
