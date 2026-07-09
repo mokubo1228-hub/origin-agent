@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.7.0 - 2026-07-09
+
+### Agent memory (explicit, user-gated notes)
+
+- A new `/memory` command lets origin keep short cross-session notes in a structured store at `~/.origin/memory/` — separate from the hand-written `~/.origin/memory.md`, which stays untouched. **Off by default**; `/memory enable` is the explicit opt-in. The only write path is your own command (`/memory remember <text>`): the model never writes memory, and nothing is learned automatically.
+- Every note passes an always-on validator: secret-like text (keys, tokens, `Authorization`, long hex/base64 runs), never-store patterns (built-in + `~/.origin/memory/never-store.txt` + policy `[memory] never_store`), duplicates, over-length notes (200 chars), and a full store (1,500 chars) are all refused with a plain reason. `/memory forget <id>` removes a note and leaves a tombstone; `/memory undo` takes back the last save; `/memory disable` stops reading and writing but keeps the store.
+- When enabled and non-empty, notes are injected as a read-only `agent_memory` block (with the standard cannot-grant-permissions preamble), shown as `notes N` in the context tray, summarized in `/status` (`agent memory: on — 2 notes`), and recorded in transcripts as metadata only (path/bytes/sha256 — never the note text). A journal at `~/.origin/memory/observations.jsonl` records operations without bodies.
+- Providers with active policy rules now receive a single generic `<workspace_policy>` notice (no patterns, no counts) so the model can explain refusals; deny lists themselves are never sent.
+
 ## v1.6.0 - 2026-07-09
 
 ### Policy harness (deny rules)
