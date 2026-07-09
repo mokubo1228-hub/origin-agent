@@ -163,6 +163,13 @@ pub(crate) fn run() -> Result<(), String> {
         user_memory,
         resumed_session: None,
     };
+    // policy ファイルの読み込み警告は黙って握らない(P-5: 気づかない緩和が最悪の失敗)。
+    if !state.runtime.policy.warnings.is_empty() {
+        state.messages.push(TuiMessage::Error(format!(
+            "Policy file warning:\n{}\nDeny rules from that file are not active. Check /status.",
+            state.runtime.policy.warnings.join("\n")
+        )));
+    }
     let mut terminal = TuiTerminal::enter()?;
 
     // run loop:① background worker の結果取り込み → ② 描画 → ③ 入力を1つ読んで dispatch。

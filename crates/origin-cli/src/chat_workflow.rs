@@ -933,6 +933,7 @@ mod tests {
             sessions_root: "/tmp/sessions".to_string(),
             cwd: "/tmp/work".to_string(),
             git_state: "clean".to_string(),
+            policy: origin_tools::policy::PolicySet::empty(),
         }
     }
 

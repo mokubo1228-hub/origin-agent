@@ -568,6 +568,32 @@ Safety behavior:
 - Retry still runs target validation, integrity validation, and `git apply --check`.
 - Retry does not bypass human approval.
 
+## Policy (deny rules)
+
+origin reads two optional deny-only policy files and merges them as a union:
+
+```text
+<cwd>/.origin/policy.toml     # workspace policy (can be committed with the project)
+~/.origin/policy.toml         # user-global policy
+```
+
+```toml
+[read]
+deny = [".env*", "secrets/**", "private/**"]
+
+[write]
+deny = ["docs/archive/**", "CHANGELOG.md"]
+```
+
+Semantics:
+
+- **Deny-only.** There is no allow or override syntax; policy can only restrict. Built-in safe-path rules (hidden files, `.env`, secret-like names, size limits) always run first — policy adds to them and can never weaken them or bypass approval.
+- **Glob subset**: `NAME` (no `/`, matches that name at any depth, `*` allowed), `*.ext`, `dir/sub/**` (whole subtree), and `dir/sub/name` (path match, `*` per segment). `*` never crosses `/`. Anything else is reported as an ignored pattern.
+- **Write deny** is enforced inside diff target validation: Agent proposals, manual `/propose`, the shell flow, and the non-git new-file gate all fail before `git apply --check` with `denied by workspace policy (.origin/policy.toml): <path>`. The Agent planner rejects denied targets early and opens a clarification instead of a review. Deny is stronger than an explicit user mention; edit the policy file to lift a rule.
+- **Read deny** is enforced before any file body is read: mentioned files are skipped with a visible policy diagnostic, and denied paths never appear in the bounded workspace overview.
+- **Privacy**: deny pattern lists are never sent to the provider and never written to transcripts; only a denied path itself can appear in a diagnostic. `/status` and `origin status` show only rule counts (`policy: workspace 2 rules · user 1 rule`, `none`, or `ignored (reason)`).
+- A malformed policy file is ignored **loudly**: a startup warning is shown and `/status` reports `ignored (...)` — deny rules from that file are not active until it parses.
+
 ## Sessions
 
 List sessions:

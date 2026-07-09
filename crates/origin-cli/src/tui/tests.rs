@@ -63,6 +63,7 @@ use super::{
     CHAT_NEWER_INDICATOR, CHAT_OLDER_INDICATOR, KEYBOARD_SCROLL_ROWS, PROMPT_CONTINUATION_PREFIX,
     WORKSPACE_OVERVIEW_MAX_ENTRIES,
 };
+use super::{agent_submit_from_planner_action, filter_overview_paths_by_policy};
 use super::{
     apply_compact_result, poll_tui_compact_worker, run_compact_with_session, TuiCompactInFlight,
     TuiCompactWorkerResult, ACTIVE_CONTEXT_SUMMARY_MAX_CHARS,
@@ -105,6 +106,7 @@ fn test_runtime() -> RuntimeState {
         sessions_root: "/home/user/.origin/sessions".to_string(),
         cwd: "/repo".to_string(),
         git_state: "clean".to_string(),
+        policy: origin_tools::policy::PolicySet::empty(),
     }
 }
 
@@ -509,8 +511,12 @@ fn non_git_safe_single_new_file_proposal_can_be_prepared_for_apply() {
     fs::create_dir_all(root.join("docs")).unwrap();
     let pending = test_new_file_pending_proposal("docs/旅計画_統合版.md", "統合内容");
 
-    let plan = prepare_non_git_new_file_apply_at_root(&root, &pending)
-        .expect("safe single new-file proposal should be allowed");
+    let plan = prepare_non_git_new_file_apply_at_root(
+        &root,
+        &pending,
+        &origin_tools::policy::PolicySet::empty(),
+    )
+    .expect("safe single new-file proposal should be allowed");
 
     assert_eq!(plan.target_path, "docs/旅計画_統合版.md");
     assert_eq!(
@@ -526,8 +532,9 @@ fn non_git_safe_single_new_file_apply_writes_only_target_file() {
     fs::create_dir_all(root.join("docs")).unwrap();
     let pending = test_new_file_pending_proposal("docs/旅計画_統合版.md", "統合内容");
 
-    let message = apply_non_git_new_file_at_root(&root, &pending)
-        .expect("safe single new-file proposal should write");
+    let message =
+        apply_non_git_new_file_at_root(&root, &pending, &origin_tools::policy::PolicySet::empty())
+            .expect("safe single new-file proposal should write");
 
     assert_eq!(
         fs::read_to_string(root.join("docs/旅計画_統合版.md")).unwrap(),
@@ -546,8 +553,12 @@ fn non_git_existing_file_edit_proposal_is_blocked() {
     fs::write(root.join("README.md"), "old\n").unwrap();
     let pending = test_pending_proposal();
 
-    let error = prepare_non_git_new_file_apply_at_root(&root, &pending)
-        .expect_err("existing-file proposal should not be allowed");
+    let error = prepare_non_git_new_file_apply_at_root(
+        &root,
+        &pending,
+        &origin_tools::policy::PolicySet::empty(),
+    )
+    .expect_err("existing-file proposal should not be allowed");
 
     assert!(
         error.contains("path already exists")
@@ -566,8 +577,12 @@ fn non_git_new_file_apply_rejects_unsafe_targets() {
         "docs/secret-token.md",
     ] {
         let pending = test_new_file_pending_proposal(target, "content");
-        let error = prepare_non_git_new_file_apply_at_root(&root, &pending)
-            .expect_err("unsafe non-git target should be rejected");
+        let error = prepare_non_git_new_file_apply_at_root(
+            &root,
+            &pending,
+            &origin_tools::policy::PolicySet::empty(),
+        )
+        .expect_err("unsafe non-git target should be rejected");
         assert!(!error.is_empty());
     }
 }
@@ -3854,6 +3869,7 @@ fn ask_mode_includes_safe_existing_files_as_context() {
     let result = ask_file_context_from_prompt_in_workspace(
         "README.md と docs/START_HERE.md を見て",
         &workspace,
+        &origin_tools::policy::PolicySet::empty(),
     );
 
     assert_eq!(result.file_contexts.len(), 2);
@@ -3885,7 +3901,11 @@ fn ask_mode_missing_file_warns_without_crashing() {
     fs::create_dir_all(&root).unwrap();
     let workspace = Workspace::new(&root).unwrap();
 
-    let result = ask_file_context_from_prompt_in_workspace("README.md を見て", &workspace);
+    let result = ask_file_context_from_prompt_in_workspace(
+        "README.md を見て",
+        &workspace,
+        &origin_tools::policy::PolicySet::empty(),
+    );
 
     assert!(result.file_contexts.is_empty());
     assert_eq!(result.file_context_records.len(), 1);
@@ -3903,8 +3923,11 @@ fn ask_mode_rejects_unsafe_files_without_contents() {
     fs::write(root.join("target/output.txt"), "heavy\n").unwrap();
     let workspace = Workspace::new(&root).unwrap();
 
-    let result =
-        ask_file_context_from_prompt_in_workspace(".env と target/output.txt を見て", &workspace);
+    let result = ask_file_context_from_prompt_in_workspace(
+        ".env と target/output.txt を見て",
+        &workspace,
+        &origin_tools::policy::PolicySet::empty(),
+    );
 
     assert!(result.file_contexts.is_empty());
     assert_eq!(result.file_context_records.len(), 2);
@@ -3983,7 +4006,11 @@ fn unrelated_ask_prompt_does_not_include_workspace_overview() {
     fs::write(root.join("README.md"), "overview content\n").unwrap();
     let workspace = Workspace::new(&root).unwrap();
 
-    let result = ask_file_context_from_prompt_in_workspace("hello", &workspace);
+    let result = ask_file_context_from_prompt_in_workspace(
+        "hello",
+        &workspace,
+        &origin_tools::policy::PolicySet::empty(),
+    );
 
     assert!(result.workspace_overview.is_none());
     assert!(result.file_contexts.is_empty());
@@ -3998,7 +4025,11 @@ fn ask_mode_includes_workspace_overview_for_generic_docs_workspace() {
     fs::write(root.join("notes").join("topic.md"), "topic\n").unwrap();
     let workspace = Workspace::new(&root).unwrap();
 
-    let result = ask_file_context_from_prompt_in_workspace("この資料群を確認して", &workspace);
+    let result = ask_file_context_from_prompt_in_workspace(
+        "この資料群を確認して",
+        &workspace,
+        &origin_tools::policy::PolicySet::empty(),
+    );
     let overview = result
         .workspace_overview
         .expect("workspace overview should be included");
@@ -4063,7 +4094,11 @@ fn missing_overview_files_do_not_crash() {
     fs::create_dir_all(&root).unwrap();
     let workspace = Workspace::new(&root).unwrap();
 
-    let result = ask_file_context_from_prompt_in_workspace("概要を教えて", &workspace);
+    let result = ask_file_context_from_prompt_in_workspace(
+        "概要を教えて",
+        &workspace,
+        &origin_tools::policy::PolicySet::empty(),
+    );
 
     assert!(result.workspace_overview.is_some());
     assert!(result.messages.iter().any(
@@ -4084,7 +4119,11 @@ fn workspace_overview_rejects_secret_binary_and_large_files_without_contents() {
     .unwrap();
     let workspace = Workspace::new(&root).unwrap();
 
-    let result = ask_file_context_from_prompt_in_workspace("このフォルダを見て", &workspace);
+    let result = ask_file_context_from_prompt_in_workspace(
+        "このフォルダを見て",
+        &workspace,
+        &origin_tools::policy::PolicySet::empty(),
+    );
     let overview = result.workspace_overview.unwrap();
     let transcript_metadata = overview
         .file_context_records
@@ -7904,4 +7943,159 @@ fn clear_still_clears_summary_entries() {
     handle_tui_command(&mut state, TuiCommand::Clear);
 
     assert!(state.active_context.provider_context().is_none());
+}
+
+// ---- P1 policy harness -----------------------------------------------------
+
+fn test_policy(read: &[&str], write: &[&str]) -> origin_tools::policy::PolicySet {
+    origin_tools::policy::PolicySet {
+        read_deny: read
+            .iter()
+            .map(|pattern| origin_tools::policy::PolicyRule {
+                pattern: pattern.to_string(),
+                source: origin_tools::policy::PolicySource::Workspace,
+            })
+            .collect(),
+        write_deny: write
+            .iter()
+            .map(|pattern| origin_tools::policy::PolicyRule {
+                pattern: pattern.to_string(),
+                source: origin_tools::policy::PolicySource::Workspace,
+            })
+            .collect(),
+        workspace_rules: read.len() + write.len(),
+        user_rules: 0,
+        warnings: Vec::new(),
+    }
+}
+
+#[test]
+fn read_denied_file_is_skipped_with_policy_reason() {
+    let root = temp_dir("policy-read-deny");
+    fs::create_dir_all(root.join("private")).unwrap();
+    fs::write(root.join("private/notes.md"), "secret notes\n").unwrap();
+    let workspace = Workspace::new(&root).unwrap();
+    let policy = test_policy(&["private/**", "secrets/**"], &[]);
+
+    // deny はユーザーの明示言及より強い(P-4)。
+    let result =
+        ask_file_context_from_prompt_in_workspace("private/notes.md を見て", &workspace, &policy);
+
+    assert!(result.file_contexts.is_empty());
+    let record = &result.file_context_records[0];
+    assert_eq!(record.status, "rejected");
+    let reason = record.reason.as_deref().unwrap_or("");
+    assert!(reason.contains("denied by workspace policy"));
+    assert!(reason.contains(".origin/policy.toml"));
+    // 他の deny パターンは record にも文言にも漏れない(P-5)。
+    assert!(!reason.contains("secrets"));
+    assert!(result.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Error(text) if text.contains("denied by workspace policy")
+    )));
+}
+
+#[test]
+fn overview_excludes_read_denied_paths() {
+    let policy = test_policy(&["private/**"], &[]);
+    let paths = vec![
+        "README.md".to_string(),
+        "private/notes.md".to_string(),
+        "docs/plan.md".to_string(),
+    ];
+    let filtered = filter_overview_paths_by_policy(paths, &policy);
+    assert_eq!(
+        filtered,
+        vec!["README.md".to_string(), "docs/plan.md".to_string()]
+    );
+}
+
+#[test]
+fn deny_beats_model_suggestion_via_planner_validation() {
+    let root = temp_dir("policy-planner-deny");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("README.md"), "readme\n").unwrap();
+    let workspace = Workspace::new(&root).unwrap();
+    let policy = test_policy(&[], &["README.md"]);
+
+    let result = agent_submit_from_planner_action(
+        "README を直して".to_string(),
+        &workspace,
+        &policy,
+        AgentPlannerAction {
+            kind: AgentPlannerActionKind::ProposeUpdateExistingFile,
+            path: Some("README.md".to_string()),
+            instruction: Some("fix".to_string()),
+            question: None,
+            rationale: None,
+        },
+    );
+
+    // review は開かず clarification に落ちる(planner 早期チェック)。
+    assert!(result.pending_existing_edit_plan.is_none());
+    assert!(result.pending_destination_clarification.is_some());
+    assert!(result.messages.iter().any(|message| {
+        let text = match message {
+            TuiMessage::Action(text) | TuiMessage::Error(text) => text,
+            _ => return false,
+        };
+        text.contains("denied by workspace policy")
+    }));
+}
+
+#[test]
+fn proposal_targeting_denied_path_is_blocked_before_apply() {
+    let root = temp_dir("policy-nongit-deny");
+    fs::create_dir_all(root.join("docs")).unwrap();
+    let pending = test_new_file_pending_proposal("docs/new.md", "body");
+    let policy = test_policy(&[], &["docs/**"]);
+
+    let err = prepare_non_git_new_file_apply_at_root(&root, &pending, &policy).unwrap_err();
+
+    assert!(err.contains("denied by workspace policy"));
+    assert!(err.contains(".origin/policy.toml"));
+    assert!(!root.join("docs/new.md").exists());
+}
+
+#[test]
+fn policy_summary_appears_in_status() {
+    let mut state = test_state("");
+    state.runtime.policy = test_policy(&["private/**"], &["docs/archive/**"]);
+    refresh_status(&mut state);
+    let output = format_tui_status(&state.status);
+    assert!(output.contains("policy:                 workspace 2 rules"));
+
+    state.runtime.policy = origin_tools::policy::PolicySet {
+        warnings: vec![".origin/policy.toml was ignored: TOML parse error".to_string()],
+        ..origin_tools::policy::PolicySet::empty()
+    };
+    refresh_status(&mut state);
+    let output = format_tui_status(&state.status);
+    assert!(output.contains("policy:                 ignored ("));
+
+    state.runtime.policy = origin_tools::policy::PolicySet::empty();
+    refresh_status(&mut state);
+    assert!(format_tui_status(&state.status).contains("policy:                 none"));
+}
+
+#[cfg(unix)]
+#[test]
+fn read_deny_applies_to_symlink_resolved_paths() {
+    let root = temp_dir("policy-symlink-deny");
+    fs::create_dir_all(root.join("private")).unwrap();
+    fs::write(root.join("private/notes.md"), "secret\n").unwrap();
+    std::os::unix::fs::symlink(root.join("private/notes.md"), root.join("ok.md")).unwrap();
+    let workspace = Workspace::new(&root).unwrap();
+    let policy = test_policy(&["private/**"], &[]);
+
+    let result = ask_file_context_from_prompt_in_workspace("ok.md を見て", &workspace, &policy);
+
+    assert!(result.file_contexts.is_empty());
+    assert!(result.file_context_records.iter().any(|record| {
+        record.status == "rejected"
+            && record
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("denied by workspace policy"))
+    }));
 }

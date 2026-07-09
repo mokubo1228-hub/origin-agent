@@ -30,6 +30,8 @@ pub(crate) struct RuntimeState {
     pub(crate) sessions_root: String,
     pub(crate) cwd: String,
     pub(crate) git_state: String,
+    /// workspace + user の deny policy(起動時に1回 load・session cache)。
+    pub(crate) policy: origin_tools::policy::PolicySet,
 }
 
 pub(crate) struct RuntimeModel {
@@ -66,6 +68,9 @@ impl RuntimeState {
         let cwd = env::current_dir()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|error| format!("unknown ({error})"));
+        let policy = env::current_dir()
+            .map(|path| origin_tools::policy::load_policy_from_env(&path))
+            .unwrap_or_else(|_| origin_tools::policy::PolicySet::empty());
 
         Ok(Self {
             provider_id: provider.id().as_str().to_string(),
@@ -80,6 +85,7 @@ impl RuntimeState {
             sessions_root,
             cwd,
             git_state: git_state_label(),
+            policy,
         })
     }
 
@@ -107,6 +113,9 @@ impl RuntimeState {
         let cwd = env::current_dir()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|error| format!("unknown ({error})"));
+        let policy = env::current_dir()
+            .map(|path| origin_tools::policy::load_policy_from_env(&path))
+            .unwrap_or_else(|_| origin_tools::policy::PolicySet::empty());
 
         Ok(Self {
             provider_id: provider.id().as_str().to_string(),
@@ -121,6 +130,7 @@ impl RuntimeState {
             sessions_root,
             cwd,
             git_state: git_state_label(),
+            policy,
         })
     }
 
@@ -585,6 +595,7 @@ mod tests {
             sessions_root: "/home/user/.origin/sessions".to_string(),
             cwd: "/repo".to_string(),
             git_state: "clean".to_string(),
+            policy: origin_tools::policy::PolicySet::empty(),
         }
     }
 

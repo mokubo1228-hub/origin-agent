@@ -25,6 +25,10 @@ pub(crate) struct StatusSnapshot {
     pub(crate) interaction_mode: Option<String>,
     /// `/resume` で読み込んだ過去 session id(background only)。無ければ None。
     pub(crate) resumed_session: Option<String>,
+    /// policy(P1)の要約。件数と警告のみで、パターン本文は持たない(P-5)。
+    pub(crate) policy_workspace_rules: usize,
+    pub(crate) policy_user_rules: usize,
+    pub(crate) policy_warning: Option<String>,
     pub(crate) pending: PendingProposalSnapshot,
 }
 
@@ -105,6 +109,9 @@ impl StatusSnapshot {
                 Some(interaction_mode_label.to_string())
             },
             resumed_session,
+            policy_workspace_rules: runtime.policy.workspace_rules,
+            policy_user_rules: runtime.policy.user_rules,
+            policy_warning: runtime.policy.warnings.first().cloned(),
             pending,
         }
     }
@@ -221,6 +228,7 @@ mod tests {
             sessions_root: "/home/user/.origin/sessions".to_string(),
             cwd: "/repo".to_string(),
             git_state: "clean".to_string(),
+            policy: origin_tools::policy::PolicySet::empty(),
         }
     }
 

@@ -303,7 +303,7 @@ fn set_proposal_review_for_pending(
         state.proposal_review = Some(TuiProposalReview {
             mode: TuiProposalReviewMode::Review,
             origin,
-            apply_status: current_apply_status(pending),
+            apply_status: current_apply_status(pending, &state.runtime.policy),
             selected_action: 0,
         });
         super::reset_advanced_reveal(state);
@@ -316,15 +316,17 @@ fn set_proposal_review_for_pending(
 
 /// この proposal を今 apply できるかの状態判定。git repo なら Available、git が無くても
 /// 安全な単一 new-file に解決できれば Available、それ以外は Blocked。判定だけで書き込みはしない。
-fn current_apply_status(pending: &PendingProposal) -> TuiProposalApplyStatus {
+fn current_apply_status(
+    pending: &PendingProposal,
+    policy: &origin_tools::policy::PolicySet,
+) -> TuiProposalApplyStatus {
     match discover_git_repo() {
         Ok(_) => TuiProposalApplyStatus::Available,
         // git repo が無くても、安全な単一 new-file として準備できるなら apply 可能とみなす。
         Err(error) if is_git_not_repository_error(&error.to_string()) => {
-            match Workspace::from_current_dir()
-                .ok()
-                .and_then(|workspace| prepare_non_git_new_file_apply(&workspace, pending).ok())
-            {
+            match Workspace::from_current_dir().ok().and_then(|workspace| {
+                prepare_non_git_new_file_apply(&workspace, pending, policy).ok()
+            }) {
                 Some(_) => TuiProposalApplyStatus::Available,
                 None => non_git_apply_blocked_status(),
             }
@@ -529,7 +531,7 @@ fn handle_non_git_proposal_review_apply(state: &mut TuiState) -> bool {
         }
     };
 
-    match apply_non_git_new_file_at_root(workspace.root(), &pending) {
+    match apply_non_git_new_file_at_root(workspace.root(), &pending, &state.runtime.policy) {
         Ok(message) => {
             state.result_panel = Some(TuiResultPanel {
                 kind: TuiResultKind::Created,
@@ -605,8 +607,9 @@ fn non_git_apply_blocked_status() -> TuiProposalApplyStatus {
 pub(super) fn prepare_non_git_new_file_apply(
     workspace: &Workspace,
     pending: &PendingProposal,
+    policy: &origin_tools::policy::PolicySet,
 ) -> Result<NonGitNewFileApply, String> {
-    prepare_non_git_new_file_apply_at_root(workspace.root(), pending)
+    prepare_non_git_new_file_apply_at_root(workspace.root(), pending, policy)
 }
 
 /// non-git new-file 書き込みの前段検証を全部通す関門。単一 new-file・workspace 内の安全な
@@ -615,13 +618,14 @@ pub(super) fn prepare_non_git_new_file_apply(
 pub(super) fn prepare_non_git_new_file_apply_at_root(
     root: &Path,
     pending: &PendingProposal,
+    policy: &origin_tools::policy::PolicySet,
 ) -> Result<NonGitNewFileApply, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("outside current directory: {error}"))?;
     let target_path = single_new_file_target(pending)?;
     let absolute_path = validate_non_git_new_file_target(&root, &target_path)?;
-    validate_diff_targets_allowing_new_files(&pending.diff, &pending.requested_files)
+    validate_diff_targets_allowing_new_files(&pending.diff, &pending.requested_files, policy)
         .map_err(|error| error.reason)?;
     validate_diff_integrity(&pending.diff).map_err(|error| error.reason)?;
     let body = extract_new_file_body_from_diff(&pending.diff, &target_path)?;
@@ -641,8 +645,9 @@ pub(super) fn prepare_non_git_new_file_apply_at_root(
 pub(super) fn apply_non_git_new_file_at_root(
     root: &Path,
     pending: &PendingProposal,
+    policy: &origin_tools::policy::PolicySet,
 ) -> Result<String, String> {
-    let plan = prepare_non_git_new_file_apply_at_root(root, pending)?;
+    let plan = prepare_non_git_new_file_apply_at_root(root, pending, policy)?;
     fs::write(&plan.absolute_path, &plan.body)
         .map_err(|error| format!("Could not create `{}`: {error}", plan.target_path))?;
     Ok(format_non_git_new_file_apply_success(&plan.target_path))

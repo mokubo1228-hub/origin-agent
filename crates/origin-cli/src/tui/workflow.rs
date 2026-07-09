@@ -380,7 +380,12 @@ pub(super) fn finish_tui_agent_plan_result(
 ) {
     state.loading = false;
     let result = match Workspace::from_current_dir() {
-        Ok(workspace) => agent_submit_from_planner_result(input, &workspace, planner_result),
+        Ok(workspace) => agent_submit_from_planner_result(
+            input,
+            &workspace,
+            &state.runtime.policy,
+            planner_result,
+        ),
         Err(error) => agent_workspace_error_submit(input, error.to_string()),
     };
     apply_agent_prompt_submit_result(state, result, active_context);

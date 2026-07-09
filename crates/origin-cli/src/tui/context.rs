@@ -44,7 +44,18 @@ pub(super) struct WorkspaceOverviewTree {
 /// planner が出した新規作成パスが安全に作れるかを分類する検証段。
 /// 危険パス・あいまいなパス・既存ファイルとの衝突は Rejected、親解決不能は Missing、
 /// 単一の安全な相対パスで親ディレクトリが実在する時だけ NewFile を返す(narrow safe exception)。
-pub(super) fn agent_new_file_target_for_path(workspace: &Workspace, path: &str) -> AgentPathTarget {
+pub(super) fn agent_new_file_target_for_path(
+    workspace: &Workspace,
+    path: &str,
+    policy: &origin_tools::policy::PolicySet,
+) -> AgentPathTarget {
+    if let Some(reason) = policy.write_denial_reason(path) {
+        return AgentPathTarget::Rejected {
+            path: path.to_string(),
+            reason,
+        };
+    }
+
     if let Some(reason) = unsafe_agent_edit_target_path_reason(path) {
         return AgentPathTarget::Rejected {
             path: path.to_string(),
@@ -110,7 +121,23 @@ pub(super) enum AgentPathTarget {
 /// planner が出した既存ファイル編集ターゲットを解決・安全検証する。
 /// absolute / 危険パス / workspace 外は弾き、解決後の相対パスも再検証してから内容を読む。
 /// 存在しない(canonicalize 失敗)場合は新規作成判定に委譲する。
-pub(super) fn agent_edit_target_for_path(workspace: &Workspace, path: &str) -> AgentPathTarget {
+pub(super) fn agent_edit_target_for_path(
+    workspace: &Workspace,
+    path: &str,
+    policy: &origin_tools::policy::PolicySet,
+) -> AgentPathTarget {
+    // policy(P1)の planner 早期チェック。深部の diff validation(安全の正)にも同じ
+    // deny があるため、ここは「review を開く前に clarification へ倒す」UX 用の二重防御。
+    if let Some(reason) = policy
+        .write_denial_reason(path)
+        .or_else(|| policy.read_denial_reason(path))
+    {
+        return AgentPathTarget::Rejected {
+            path: path.to_string(),
+            reason,
+        };
+    }
+
     if Path::new(path).is_absolute() {
         return AgentPathTarget::External {
             path: path.to_string(),
@@ -128,7 +155,7 @@ pub(super) fn agent_edit_target_for_path(workspace: &Workspace, path: &str) -> A
     let resolved = match workspace.resolve_existing_file(path) {
         Ok(resolved) => resolved,
         Err(WorkspaceError::CanonicalizePath { .. }) => {
-            return agent_new_file_target_for_path(workspace, path);
+            return agent_new_file_target_for_path(workspace, path, policy);
         }
         Err(WorkspaceError::OutsideWorkspace { .. }) => {
             return AgentPathTarget::External {
@@ -156,6 +183,16 @@ pub(super) fn agent_edit_target_for_path(workspace: &Workspace, path: &str) -> A
             reason,
         };
     }
+    // 解決後の相対パスでも policy を再検査する(symlink 経由の denied 実体を塞ぐ)。
+    if let Some(reason) = policy
+        .write_denial_reason(&relative_path)
+        .or_else(|| policy.read_denial_reason(&relative_path))
+    {
+        return AgentPathTarget::Rejected {
+            path: relative_path,
+            reason,
+        };
+    }
 
     match read_workspace_file(workspace, path) {
         Ok(file) => AgentPathTarget::Included {
@@ -171,9 +208,12 @@ pub(super) fn agent_edit_target_for_path(workspace: &Workspace, path: &str) -> A
 
 /// current directory を workspace として prompt 由来の file context を集める入口。
 /// workspace を確立できなければ何も載せず、エラーメッセージだけ返す(外部参照に開かない)。
-pub(super) fn ask_file_context_from_prompt(prompt: &str) -> AskFileContextResult {
+pub(super) fn ask_file_context_from_prompt(
+    prompt: &str,
+    policy: &origin_tools::policy::PolicySet,
+) -> AskFileContextResult {
     match Workspace::from_current_dir() {
-        Ok(workspace) => ask_file_context_from_prompt_in_workspace(prompt, &workspace),
+        Ok(workspace) => ask_file_context_from_prompt_in_workspace(prompt, &workspace, policy),
         Err(error) => AskFileContextResult {
             file_contexts: Vec::new(),
             file_context_records: Vec::new(),
@@ -192,6 +232,7 @@ pub(super) fn ask_file_context_from_prompt(prompt: &str) -> AskFileContextResult
 pub(super) fn ask_file_context_from_prompt_in_workspace(
     prompt: &str,
     workspace: &Workspace,
+    policy: &origin_tools::policy::PolicySet,
 ) -> AskFileContextResult {
     let paths = detect_prompt_file_paths(prompt);
     let mut file_contexts = Vec::new();
@@ -199,7 +240,7 @@ pub(super) fn ask_file_context_from_prompt_in_workspace(
     let mut messages = Vec::new();
 
     for path in &paths {
-        match ask_context_for_path(workspace, path) {
+        match ask_context_for_path(workspace, path, policy) {
             AskPathContext::Included {
                 file_context,
                 record,
@@ -231,7 +272,7 @@ pub(super) fn ask_file_context_from_prompt_in_workspace(
     }
 
     let workspace_overview = if should_include_workspace_overview(prompt, &paths, &file_contexts) {
-        let overview = ask_workspace_overview_context(workspace);
+        let overview = ask_workspace_overview_context(workspace, policy);
         messages.extend(overview.messages);
         overview.context
     } else {
@@ -263,8 +304,20 @@ pub(super) enum AskPathContext {
 
 /// 単一パスを Ask context へ解決する。secret-like / 危険パス / workspace 外は読まず、
 /// 解決後の相対パスでも再検証してから本文と sha256 を取る(内容を載せる手前の最後の関門)。
-pub(super) fn ask_context_for_path(workspace: &Workspace, path: &str) -> AskPathContext {
+pub(super) fn ask_context_for_path(
+    workspace: &Workspace,
+    path: &str,
+    policy: &origin_tools::policy::PolicySet,
+) -> AskPathContext {
     if let Some(reason) = unsafe_prompt_context_path_reason(path) {
+        return AskPathContext::Rejected {
+            record: rejected_file_context_record(path, reason),
+        };
+    }
+
+    // read policy(P1)。built-in の安全規則(上)の後・fs 読み取りの前に判定する。
+    // deny はユーザーの明示言及より強い(P-4)。
+    if let Some(reason) = policy.read_denial_reason(path) {
         return AskPathContext::Rejected {
             record: rejected_file_context_record(path, reason),
         };
@@ -295,6 +348,13 @@ pub(super) fn ask_context_for_path(workspace: &Workspace, path: &str) -> AskPath
         .to_string_lossy()
         .to_string();
     if let Some(reason) = unsafe_prompt_context_path_reason(&relative_path) {
+        return AskPathContext::Rejected {
+            record: rejected_file_context_record(&relative_path, reason),
+        };
+    }
+
+    // 解決後の相対パスでも policy を再検査する(symlink 等で denied 実体へ届く経路を塞ぐ)。
+    if let Some(reason) = policy.read_denial_reason(&relative_path) {
         return AskPathContext::Rejected {
             record: rejected_file_context_record(&relative_path, reason),
         };
@@ -372,19 +432,25 @@ pub(super) fn has_workspace_overview_intent(prompt: &str) -> bool {
 /// bounded workspace overview の本体。候補パスを件数上限・合計バイト上限で切りながら
 /// 安全に読み、tree(パス列挙)・読み込めたファイル・skip 件数を1つの context にまとめる。
 /// 上限超過や除外は warnings/skipped に集計し、provider へ渡す overview を bound 内に保つ。
-pub(super) fn ask_workspace_overview_context(workspace: &Workspace) -> AskWorkspaceOverviewResult {
+pub(super) fn ask_workspace_overview_context(
+    workspace: &Workspace,
+    policy: &origin_tools::policy::PolicySet,
+) -> AskWorkspaceOverviewResult {
     let tree = workspace_overview_tree(workspace);
     let mut file_contexts = Vec::new();
     let mut file_context_records = Vec::new();
     let mut warnings = tree.warnings.clone();
     let mut total_bytes = 0usize;
 
-    for path in workspace_overview_candidate_paths(workspace) {
+    // read policy(P1): denied path は tree/本文のどちらにも載せない。
+    for path in
+        filter_overview_paths_by_policy(workspace_overview_candidate_paths(workspace), policy)
+    {
         if file_contexts.len() >= WORKSPACE_OVERVIEW_MAX_FILES {
             break;
         }
 
-        match ask_workspace_overview_context_for_path(workspace, &path) {
+        match ask_workspace_overview_context_for_path(workspace, &path, policy) {
             AskPathContext::Included {
                 file_context,
                 record,
@@ -456,6 +522,7 @@ pub(super) fn ask_workspace_overview_context(workspace: &Workspace) -> AskWorksp
 pub(super) fn ask_workspace_overview_context_for_path(
     workspace: &Workspace,
     path: &str,
+    policy: &origin_tools::policy::PolicySet,
 ) -> AskPathContext {
     if let Some(reason) = unsafe_prompt_context_path_reason(path) {
         return AskPathContext::Rejected {
@@ -500,7 +567,7 @@ pub(super) fn ask_workspace_overview_context_for_path(
         }
     }
 
-    ask_context_for_path(workspace, path)
+    ask_context_for_path(workspace, path, policy)
 }
 
 /// workspace が git repo か generic かのラベルを返す(overview 表示のメタ情報)。
@@ -619,6 +686,17 @@ pub(super) fn workspace_overview_tree_text(entries: &[String]) -> String {
 
 /// overview で内容まで読む候補パスを優先順で集める。priority list → `docs/*.md` →
 /// root 直下の `.md`/`.txt` の順に、重複を避けて並べる(代表ドキュメントを先に拾う狙い)。
+/// overview 候補から policy read deny を除外する(P1)。tree 表示・本文読み込みの両方に効く。
+pub(super) fn filter_overview_paths_by_policy(
+    paths: Vec<String>,
+    policy: &origin_tools::policy::PolicySet,
+) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|path| policy.denies_read(path).is_none())
+        .collect()
+}
+
 pub(super) fn workspace_overview_candidate_paths(workspace: &Workspace) -> Vec<String> {
     let mut paths = Vec::new();
     for path in WORKSPACE_OVERVIEW_PRIORITY_PATHS {

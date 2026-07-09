@@ -1962,6 +1962,7 @@ mod tests {
                 sessions_root: "/home/user/.origin/sessions".to_string(),
                 cwd: "/repo".to_string(),
                 git_state: "clean".to_string(),
+                policy: origin_tools::policy::PolicySet::empty(),
             },
             pending_proposal: None,
         }

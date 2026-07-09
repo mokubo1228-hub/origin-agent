@@ -712,6 +712,8 @@ name = "origin-tools"
 version = "0.1.0"
 dependencies = [
  "origin-protocol",
+ "serde",
+ "toml",
 ]
 
 [[package]]

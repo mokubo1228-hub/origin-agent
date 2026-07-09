@@ -399,6 +399,7 @@ fn validate_or_retry_proposal(
         request.mode,
         request.retry_invalid,
         files,
+        &request.runtime.policy,
         session,
         proposal,
         |error| match request.mode {
@@ -434,6 +435,7 @@ fn validate_or_retry_proposal_with_request<F>(
     mode: ProposePreviewMode,
     retry_invalid: bool,
     files: &[ReadFile],
+    policy: &origin_tools::policy::PolicySet,
     session: &mut SessionWriter,
     proposal: origin_protocol::patch::DiffProposal,
     retry_request: F,
@@ -441,7 +443,7 @@ fn validate_or_retry_proposal_with_request<F>(
 where
     F: FnOnce(&str) -> Result<(String, origin_protocol::patch::DiffProposal), String>,
 {
-    match validate_preview_diff(mode, &proposal.diff, files, session) {
+    match validate_preview_diff(mode, &proposal.diff, files, policy, session) {
         Ok(()) => return Ok((proposal, None)),
         Err(error) => {
             if mode == ProposePreviewMode::NewFile
@@ -487,7 +489,7 @@ where
                 commands::record_model_diff_response(session, &retry_response, &retry_proposal)?;
             }
 
-            match validate_preview_diff(mode, &retry_proposal.diff, files, session) {
+            match validate_preview_diff(mode, &retry_proposal.diff, files, policy, session) {
                 Ok(()) => {
                     record_session_event(session, SessionEvent::DiffRetrySucceeded { attempt: 1 })?;
                     Ok((retry_proposal, Some(retry_notice)))
@@ -508,11 +510,13 @@ fn validate_preview_diff(
     mode: ProposePreviewMode,
     diff: &str,
     files: &[ReadFile],
+    policy: &origin_tools::policy::PolicySet,
     session: &mut SessionWriter,
 ) -> Result<(), String> {
     commands::validate_proposed_diff_with_new_file_mode(
         diff,
         files,
+        policy,
         session,
         mode == ProposePreviewMode::NewFile,
     )?;
@@ -568,7 +572,14 @@ fn different_new_file_path_suggestion(diff: &str, requested_files: &[ReadFile]) 
     if proposed == &requested.relative_path {
         return None;
     }
-    validate_diff_targets_allowing_new_files(diff, std::slice::from_ref(proposed)).ok()?;
+    validate_diff_targets_allowing_new_files(
+        diff,
+        std::slice::from_ref(proposed),
+        &origin_tools::policy::PolicySet::empty(),
+    )
+    .ok()?;
+    // 注: これは「別パス提案の妥当性判定」であり書き込みではない。提案された別パスの
+    // policy 判定は、その後の正規 validation(policy 付き)が必ず行う。
     Some(proposed.clone())
 }
 
@@ -919,6 +930,7 @@ mod tests {
             ProposePreviewMode::NewFile,
             true,
             &files,
+            &origin_tools::policy::PolicySet::empty(),
             &mut session,
             DiffProposal::new(invalid_new_file_diff()),
             |error| {
@@ -952,6 +964,7 @@ mod tests {
             ProposePreviewMode::NewFile,
             true,
             &files,
+            &origin_tools::policy::PolicySet::empty(),
             &mut session,
             DiffProposal::new(invalid_new_file_diff()),
             |_error| {

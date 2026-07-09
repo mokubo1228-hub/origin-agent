@@ -611,7 +611,7 @@ pub(super) fn prepare_tui_submit(state: &mut TuiState) -> Option<TuiSubmit> {
         }));
     }
 
-    let ask_context = ask_file_context_from_prompt(&input);
+    let ask_context = ask_file_context_from_prompt(&input, &state.runtime.policy);
     for message in &ask_context.messages {
         state.active_context.push_tui_message(message);
     }
@@ -1219,7 +1219,7 @@ pub(super) fn update_pending_agent_new_file_plan_path(
         }
     };
 
-    match agent_new_file_target_for_path(&workspace, input) {
+    match agent_new_file_target_for_path(&workspace, input, &state.runtime.policy) {
         AgentPathTarget::NewFile { path } => {
             plan.target_path = path;
             let message = TuiMessage::Action(format!(

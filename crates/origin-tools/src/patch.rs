@@ -50,24 +50,40 @@ pub struct DiffIntegrityError {
 pub fn validate_diff_targets(
     diff: &str,
     requested_files: &[String],
+    policy: &crate::policy::PolicySet,
 ) -> Result<DiffValidationReport, DiffValidationError> {
-    validate_diff_targets_with_mode(diff, requested_files, false)
+    validate_diff_targets_with_mode(diff, requested_files, policy, false)
 }
 
 pub fn validate_diff_targets_allowing_new_files(
     diff: &str,
     requested_files: &[String],
+    policy: &crate::policy::PolicySet,
 ) -> Result<DiffValidationReport, DiffValidationError> {
-    validate_diff_targets_with_mode(diff, requested_files, true)
+    validate_diff_targets_with_mode(diff, requested_files, policy, true)
 }
 
 fn validate_diff_targets_with_mode(
     diff: &str,
     requested_files: &[String],
+    policy: &crate::policy::PolicySet,
     allow_new_files: bool,
 ) -> Result<DiffValidationReport, DiffValidationError> {
     let requested_files = normalize_requested_files(requested_files);
     let requested_set = requested_files.iter().cloned().collect::<BTreeSet<_>>();
+
+    // write policy(P1)。requested_files は全 write 経路の明示ターゲット集合なので、
+    // ここで deny を強制すれば手動 /propose fallback を含む全経路が check/apply 前に落ちる。
+    // built-in の安全規則より後・実処理より前(P-2/P-3)。deny は user 明示より強い(P-4)。
+    for requested in &requested_files {
+        if let Some(reason) = policy.write_denial_reason(requested) {
+            return Err(validation_error(
+                requested_files.clone(),
+                BTreeSet::new(),
+                reason,
+            ));
+        }
+    }
 
     let mut proposed = BTreeSet::new();
     let mut pending_new_file: Option<String> = None;
@@ -562,7 +578,12 @@ mod tests {
 -old
 +new"#;
 
-        let report = validate_diff_targets(diff, &["README.md".to_string()]).unwrap();
+        let report = validate_diff_targets(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap();
 
         assert_eq!(report.proposed_files, ["README.md"]);
     }
@@ -575,7 +596,12 @@ mod tests {
 -old
 +new"#;
 
-        let report = validate_diff_targets(diff, &["README.md".to_string()]).unwrap();
+        let report = validate_diff_targets(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap();
 
         assert_eq!(report.requested_files, ["README.md"]);
         assert_eq!(report.proposed_files, ["README.md"]);
@@ -589,7 +615,12 @@ mod tests {
 -old
 +new"#;
 
-        let err = validate_diff_targets(diff, &["README.md".to_string()]).unwrap_err();
+        let err = validate_diff_targets(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("outside the requested file scope"));
         assert_eq!(err.requested_files, ["README.md"]);
@@ -609,9 +640,12 @@ mod tests {
 -old
 +new"#;
 
-        let report =
-            validate_diff_targets(diff, &["README.md".to_string(), "Cargo.toml".to_string()])
-                .unwrap();
+        let report = validate_diff_targets(
+            diff,
+            &["README.md".to_string(), "Cargo.toml".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap();
 
         assert_eq!(report.proposed_files, ["Cargo.toml", "README.md"]);
     }
@@ -624,7 +658,12 @@ mod tests {
 -old
 +new"#;
 
-        let err = validate_diff_targets(diff, &["README.md".to_string()]).unwrap_err();
+        let err = validate_diff_targets(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("`..`"));
     }
@@ -637,7 +676,12 @@ mod tests {
 -old
 +new"#;
 
-        let err = validate_diff_targets(diff, &["README.md".to_string()]).unwrap_err();
+        let err = validate_diff_targets(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("absolute"));
     }
@@ -649,7 +693,12 @@ mod tests {
 @@ -0,0 +1 @@
 +new"#;
 
-        let err = validate_diff_targets(diff, &["README.md".to_string()]).unwrap_err();
+        let err = validate_diff_targets(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("new file and delete file"));
     }
@@ -661,8 +710,12 @@ mod tests {
 @@ -0,0 +1 @@
 +new"#;
 
-        let report =
-            validate_diff_targets_allowing_new_files(diff, &["docs/new.md".to_string()]).unwrap();
+        let report = validate_diff_targets_allowing_new_files(
+            diff,
+            &["docs/new.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap();
 
         assert_eq!(report.requested_files, ["docs/new.md"]);
         assert_eq!(report.proposed_files, ["docs/new.md"]);
@@ -675,8 +728,12 @@ mod tests {
 @@ -0,0 +1 @@
 +new"#;
 
-        let err = validate_diff_targets_allowing_new_files(diff, &["docs/new.md".to_string()])
-            .unwrap_err();
+        let err = validate_diff_targets_allowing_new_files(
+            diff,
+            &["docs/new.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("outside the requested file scope"));
         assert_eq!(err.proposed_files, ["docs/other.md"]);
@@ -689,8 +746,12 @@ mod tests {
 @@ -0,0 +1 @@
 +new"#;
 
-        let err = validate_diff_targets_allowing_new_files(diff, &["docs/new.md".to_string()])
-            .unwrap_err();
+        let err = validate_diff_targets_allowing_new_files(
+            diff,
+            &["docs/new.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("must use `--- /dev/null`"));
     }
@@ -702,7 +763,12 @@ mod tests {
 @@ -1 +0,0 @@
 -old"#;
 
-        let err = validate_diff_targets(diff, &["README.md".to_string()]).unwrap_err();
+        let err = validate_diff_targets(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("new file and delete file"));
     }
@@ -714,8 +780,12 @@ mod tests {
 @@ -1 +0,0 @@
 -old"#;
 
-        let err =
-            validate_diff_targets_allowing_new_files(diff, &["README.md".to_string()]).unwrap_err();
+        let err = validate_diff_targets_allowing_new_files(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("must use `--- /dev/null`"));
     }
@@ -730,7 +800,12 @@ rename to README2.md
 -old
 +new"#;
 
-        let err = validate_diff_targets(diff, &["README.md".to_string()]).unwrap_err();
+        let err = validate_diff_targets(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("rename"));
     }
@@ -745,8 +820,12 @@ rename to README2.md
 -old
 +new"#;
 
-        let err =
-            validate_diff_targets_allowing_new_files(diff, &["README.md".to_string()]).unwrap_err();
+        let err = validate_diff_targets_allowing_new_files(
+            diff,
+            &["README.md".to_string()],
+            &crate::policy::PolicySet::empty(),
+        )
+        .unwrap_err();
 
         assert!(err.reason.contains("rename"));
     }
@@ -882,5 +961,44 @@ rename to README2.md
         let err = validate_diff_integrity(diff).unwrap_err();
 
         assert!(err.reason.contains("hunk body line"));
+    }
+
+    fn write_deny_policy(pattern: &str) -> crate::policy::PolicySet {
+        crate::policy::PolicySet {
+            write_deny: vec![crate::policy::PolicyRule {
+                pattern: pattern.to_string(),
+                source: crate::policy::PolicySource::Workspace,
+            }],
+            workspace_rules: 1,
+            ..crate::policy::PolicySet::empty()
+        }
+    }
+
+    #[test]
+    fn write_denied_target_fails_diff_validation() {
+        let diff = "--- a/docs/archive/old.md\n+++ b/docs/archive/old.md\n@@ -1 +1 @@\n-a\n+b\n";
+        let err = validate_diff_targets(
+            diff,
+            &["docs/archive/old.md".to_string()],
+            &write_deny_policy("docs/archive/**"),
+        )
+        .unwrap_err();
+        assert!(err.reason.contains("denied by workspace policy"));
+        assert!(err.reason.contains(".origin/policy.toml"));
+        assert!(err.reason.contains("docs/archive/old.md"));
+        assert!(!err.reason.contains("**"));
+    }
+
+    #[test]
+    fn write_deny_does_not_grant_anything() {
+        // policy があっても、従来 reject される diff(範囲外)は reject のまま(P-1)。
+        let diff = "--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -1 +1 @@\n-a\n+b\n";
+        let err = validate_diff_targets(
+            diff,
+            &["README.md".to_string()],
+            &write_deny_policy("docs/archive/**"),
+        )
+        .unwrap_err();
+        assert!(err.reason.contains("outside the requested file scope"));
     }
 }

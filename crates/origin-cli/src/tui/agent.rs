@@ -86,7 +86,12 @@ pub(super) fn prepare_agent_prompt_submit_in_workspace<P: AgentActionPlanner>(
     planner: &mut P,
 ) -> AgentPromptSubmitResult {
     let planner_result = planner.plan_agent_action(&input, active_context, None);
-    agent_submit_from_planner_result(input, workspace, planner_result)
+    agent_submit_from_planner_result(
+        input,
+        workspace,
+        &origin_tools::policy::PolicySet::empty(),
+        planner_result,
+    )
 }
 
 /// planner 呼び出しの成否を受けて遷移を決める入口。
@@ -95,10 +100,11 @@ pub(super) fn prepare_agent_prompt_submit_in_workspace<P: AgentActionPlanner>(
 pub(super) fn agent_submit_from_planner_result(
     input: String,
     workspace: &Workspace,
+    policy: &origin_tools::policy::PolicySet,
     planner_result: Result<AgentPlannerAction, String>,
 ) -> AgentPromptSubmitResult {
     match planner_result {
-        Ok(action) => agent_submit_from_planner_action(input, workspace, action),
+        Ok(action) => agent_submit_from_planner_action(input, workspace, policy, action),
         Err(error) => agent_clarification_submit(
             input,
             format!(
@@ -170,10 +176,11 @@ pub(super) fn apply_agent_prompt_submit_result(
 pub(super) fn agent_submit_from_planner_action(
     input: String,
     workspace: &Workspace,
+    policy: &origin_tools::policy::PolicySet,
     action: AgentPlannerAction,
 ) -> AgentPromptSubmitResult {
     match action.kind {
-        AgentPlannerActionKind::ReadOnlyAnswer => agent_read_only_submit(input, workspace),
+        AgentPlannerActionKind::ReadOnlyAnswer => agent_read_only_submit(input, workspace, policy),
         AgentPlannerActionKind::AskClarification => agent_clarification_submit(
             input,
             action
@@ -183,10 +190,10 @@ pub(super) fn agent_submit_from_planner_action(
             Vec::new(),
         ),
         AgentPlannerActionKind::ProposeUpdateExistingFile => {
-            agent_existing_file_submit_from_planner(input, workspace, action)
+            agent_existing_file_submit_from_planner(input, workspace, policy, action)
         }
         AgentPlannerActionKind::ProposeCreateNewFile => {
-            agent_new_file_submit_from_planner(input, workspace, action)
+            agent_new_file_submit_from_planner(input, workspace, policy, action)
         }
         AgentPlannerActionKind::Cancel | AgentPlannerActionKind::NoAction => {
             AgentPromptSubmitResult {
@@ -208,8 +215,9 @@ pub(super) fn agent_submit_from_planner_action(
 pub(super) fn agent_read_only_submit(
     input: String,
     workspace: &Workspace,
+    policy: &origin_tools::policy::PolicySet,
 ) -> AgentPromptSubmitResult {
-    let ask_context = ask_file_context_from_prompt_in_workspace(&input, workspace);
+    let ask_context = ask_file_context_from_prompt_in_workspace(&input, workspace, policy);
     let mut messages = vec![TuiMessage::Action(format_tui_agent_read_only_plan(
         &ask_context,
     ))];
@@ -244,6 +252,7 @@ pub(super) fn clear_tui_input(state: &mut TuiState) {
 pub(super) fn agent_existing_file_submit_from_planner(
     input: String,
     workspace: &Workspace,
+    policy: &origin_tools::policy::PolicySet,
     action: AgentPlannerAction,
 ) -> AgentPromptSubmitResult {
     let mut messages = Vec::new();
@@ -264,7 +273,7 @@ pub(super) fn agent_existing_file_submit_from_planner(
         );
     };
 
-    match agent_edit_target_for_path(workspace, &path) {
+    match agent_edit_target_for_path(workspace, &path, policy) {
         AgentPathTarget::Included { path, bytes } => {
             let plan = PendingAgentExistingEditPlan {
                 original_prompt: instruction,
@@ -303,6 +312,7 @@ pub(super) fn agent_existing_file_submit_from_planner(
 pub(super) fn agent_new_file_submit_from_planner(
     input: String,
     workspace: &Workspace,
+    policy: &origin_tools::policy::PolicySet,
     action: AgentPlannerAction,
 ) -> AgentPromptSubmitResult {
     let mut messages = Vec::new();
@@ -323,13 +333,14 @@ pub(super) fn agent_new_file_submit_from_planner(
         );
     };
 
-    match agent_new_file_target_for_path(workspace, &path) {
+    match agent_new_file_target_for_path(workspace, &path, policy) {
         AgentPathTarget::NewFile { path } => {
             // 作成対象とは別に、入力/指示で触れられた既存ファイルを read-only 参照として集める。
             let context_files = collect_agent_create_context_files(
                 &input,
                 &instruction,
                 workspace,
+                policy,
                 &path,
                 &mut messages,
             );
@@ -450,6 +461,7 @@ pub(super) fn collect_agent_create_context_files(
     input: &str,
     instruction: &str,
     workspace: &Workspace,
+    policy: &origin_tools::policy::PolicySet,
     target_path: &str,
     messages: &mut Vec<TuiMessage>,
 ) -> Vec<ChatFileContext> {
@@ -464,7 +476,7 @@ pub(super) fn collect_agent_create_context_files(
         if let AskPathContext::Included {
             file_context,
             record: _,
-        } = ask_context_for_path(workspace, &path)
+        } = ask_context_for_path(workspace, &path, policy)
         {
             messages.push(TuiMessage::Action(format!(
                 "Agent mode included `{}` as read-only source context ({} bytes).",
@@ -849,6 +861,7 @@ pub(super) fn format_agent_plan_read_context_for_files(files: &[ChatFileContext]
 pub(super) fn suggest_agent_new_file_output_path(
     prompt: &str,
     workspace: &Workspace,
+    policy: &origin_tools::policy::PolicySet,
     context_files: &[ChatFileContext],
     active_context: Option<&str>,
 ) -> String {
@@ -867,8 +880,8 @@ pub(super) fn suggest_agent_new_file_output_path(
     } else {
         format!("{stem}-summary")
     };
-    first_safe_new_file_path(workspace, &format!("{base}.md"))
-        .unwrap_or_else(|| first_safe_new_file_path(workspace, "consolidated.md").unwrap())
+    first_safe_new_file_path(workspace, &format!("{base}.md"), policy)
+        .unwrap_or_else(|| first_safe_new_file_path(workspace, "consolidated.md", policy).unwrap())
 }
 
 /// 【未使用】入力・active context・参照ファイル・workspace 直下のドキュメント名から
@@ -1086,7 +1099,11 @@ pub(super) fn sanitize_agent_suggested_filename_stem(topic: &str) -> String {
 
 /// 【未使用】候補名から、まだ存在しない安全な新規パスを `-2`, `-3`… と連番で探す。
 #[allow(dead_code)]
-pub(super) fn first_safe_new_file_path(workspace: &Workspace, candidate: &str) -> Option<String> {
+pub(super) fn first_safe_new_file_path(
+    workspace: &Workspace,
+    candidate: &str,
+    policy: &origin_tools::policy::PolicySet,
+) -> Option<String> {
     let path = Path::new(candidate);
     let stem = path.file_stem()?.to_str()?;
     let extension = path
@@ -1100,7 +1117,7 @@ pub(super) fn first_safe_new_file_path(workspace: &Workspace, candidate: &str) -
             format!("{stem}-{index}.{extension}")
         };
         if matches!(
-            agent_new_file_target_for_path(workspace, &candidate),
+            agent_new_file_target_for_path(workspace, &candidate, policy),
             AgentPathTarget::NewFile { .. }
         ) {
             return Some(candidate);

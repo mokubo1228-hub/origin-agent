@@ -3,6 +3,7 @@ pub mod diff_extract;
 pub mod file_read;
 pub mod git;
 pub mod patch;
+pub mod policy;
 pub mod workspace;
 
 pub use approval::{parse_approval_decision, ApprovalDecision};

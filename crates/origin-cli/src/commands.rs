@@ -191,6 +191,23 @@ fn status(args: Args) -> Result<(), String> {
         .map(chat_workflow::WorkspaceInstructions::load_from_cwd)
         .unwrap_or(chat_workflow::WorkspaceInstructions::None);
     let memory = chat_workflow::UserMemory::load_default();
+    let policy = env::current_dir()
+        .map(|path| origin_tools::policy::load_policy_from_env(&path))
+        .unwrap_or_else(|_| origin_tools::policy::PolicySet::empty());
+    let policy_label = if let Some(warning) = policy.warnings.first() {
+        format!("ignored ({warning})")
+    } else if policy.workspace_rules == 0 && policy.user_rules == 0 {
+        "none".to_string()
+    } else {
+        let mut parts = Vec::new();
+        if policy.workspace_rules > 0 {
+            parts.push(format!("workspace {} rules", policy.workspace_rules));
+        }
+        if policy.user_rules > 0 {
+            parts.push(format!("user {} rules", policy.user_rules));
+        }
+        parts.join(" · ")
+    };
 
     print!(
         "{}",
@@ -206,6 +223,7 @@ fn status(args: Args) -> Result<(), String> {
             command: "origin",
             workspace_instructions: &instruction_file_status_label(workspace_instructions.record()),
             memory: &instruction_file_status_label(memory.record()),
+            policy: &policy_label,
         })
     );
     Ok(())
@@ -248,6 +266,7 @@ struct StatusOutput<'a> {
     command: &'a str,
     workspace_instructions: &'a str,
     memory: &'a str,
+    policy: &'a str,
 }
 
 fn format_status_output(status: StatusOutput<'_>) -> String {
@@ -263,6 +282,7 @@ fn format_status_output(status: StatusOutput<'_>) -> String {
     push_field(&mut output, "git", status.git);
     push_field(&mut output, "instructions", status.workspace_instructions);
     push_field(&mut output, "memory", status.memory);
+    push_field(&mut output, "policy", status.policy);
     push_field(&mut output, "command", status.command);
     output
 }
@@ -555,6 +575,16 @@ fn propose(args: Args, session: &mut SessionWriter) -> Result<(), String> {
     }
 
     let workspace = Workspace::from_current_dir().map_err(|error| error.to_string())?;
+    let policy = origin_tools::policy::load_policy_from_env(workspace.root());
+    // deny は user の明示 intent より強い(P-4)。読む前・provider に送る前に拒否する。
+    for path in &args.paths {
+        if let Some(reason) = policy.read_denial_reason(path) {
+            return Err(format!("`{path}` was not read — {reason}."));
+        }
+        if let Some(reason) = policy.write_denial_reason(path) {
+            return Err(format!("Cannot propose changes to `{path}` — {reason}."));
+        }
+    }
     let files = read_workspace_files(&workspace, &args.paths).map_err(|error| error.to_string())?;
     for file in &files {
         record_session_event(
@@ -623,8 +653,13 @@ fn propose(args: Args, session: &mut SessionWriter) -> Result<(), String> {
             false,
         )
     };
-    let proposal =
-        request_and_validate_diff_proposal(args.retry_invalid, &files, session, &mut request)?;
+    let proposal = request_and_validate_diff_proposal(
+        args.retry_invalid,
+        &files,
+        &policy,
+        session,
+        &mut request,
+    )?;
 
     if proposal.is_empty() {
         println!("No changes proposed.");
@@ -633,6 +668,7 @@ fn propose(args: Args, session: &mut SessionWriter) -> Result<(), String> {
             proposal,
             args.retry_apply_check,
             &files,
+            &policy,
             session,
             &mut request,
         )?;
@@ -683,6 +719,7 @@ fn prepare_patch_for_git_flow<F>(
     proposal: DiffProposal,
     retry_apply_check: bool,
     files: &[ReadFile],
+    policy: &origin_tools::policy::PolicySet,
     session: &mut SessionWriter,
     request: &mut F,
 ) -> Result<(origin_tools::GitRepo, DiffProposal), String>
@@ -695,6 +732,7 @@ where
         proposal,
         retry_apply_check,
         files,
+        policy,
         session,
         request,
         |diff, session| run_git_apply_check(&repo, diff, session),
@@ -706,6 +744,7 @@ fn apply_check_with_optional_retry<F, C>(
     proposal: DiffProposal,
     retry_apply_check: bool,
     files: &[ReadFile],
+    policy: &origin_tools::policy::PolicySet,
     session: &mut SessionWriter,
     request: &mut F,
     mut apply_check: C,
@@ -743,7 +782,7 @@ where
             record_model_diff_response(session, &retry_response, &retry_proposal)?;
 
             if let Err(validation_error) =
-                validate_proposed_diff(&retry_proposal.diff, files, session)
+                validate_proposed_diff(&retry_proposal.diff, files, policy, session)
             {
                 record_apply_check_retry_failed(session, &validation_error)?;
                 return Err(validation_error);
@@ -771,6 +810,7 @@ where
 fn request_and_validate_diff_proposal<F>(
     retry_invalid: bool,
     files: &[ReadFile],
+    policy: &origin_tools::policy::PolicySet,
     session: &mut SessionWriter,
     mut request: F,
 ) -> Result<DiffProposal, String>
@@ -780,7 +820,7 @@ where
     let (response, proposal) = request(None)?;
     record_model_diff_response(session, &response, &proposal)?;
 
-    match validate_proposed_diff(&proposal.diff, files, session) {
+    match validate_proposed_diff(&proposal.diff, files, policy, session) {
         Ok(()) => Ok(proposal),
         Err(error) if retry_invalid => {
             record_session_event(
@@ -807,7 +847,7 @@ where
                 };
             record_model_diff_response(session, &retry_response, &retry_proposal)?;
 
-            match validate_proposed_diff(&retry_proposal.diff, files, session) {
+            match validate_proposed_diff(&retry_proposal.diff, files, policy, session) {
                 Ok(()) => {
                     record_session_event(
                         session,
@@ -1057,14 +1097,16 @@ pub(crate) fn record_model_diff_response(
 pub(crate) fn validate_proposed_diff(
     diff: &str,
     files: &[ReadFile],
+    policy: &origin_tools::policy::PolicySet,
     session: &mut SessionWriter,
 ) -> Result<(), String> {
-    validate_proposed_diff_with_new_file_mode(diff, files, session, false)
+    validate_proposed_diff_with_new_file_mode(diff, files, policy, session, false)
 }
 
 pub(crate) fn validate_proposed_diff_with_new_file_mode(
     diff: &str,
     files: &[ReadFile],
+    policy: &origin_tools::policy::PolicySet,
     session: &mut SessionWriter,
     allow_new_files: bool,
 ) -> Result<(), String> {
@@ -1073,9 +1115,9 @@ pub(crate) fn validate_proposed_diff_with_new_file_mode(
         .map(|file| file.relative_path.clone())
         .collect::<Vec<_>>();
     let validation = if allow_new_files {
-        validate_diff_targets_allowing_new_files(diff, &requested_files)
+        validate_diff_targets_allowing_new_files(diff, &requested_files, policy)
     } else {
-        validate_diff_targets(diff, &requested_files)
+        validate_diff_targets(diff, &requested_files, policy)
     };
     match validation {
         Ok(report) => {
@@ -2149,6 +2191,7 @@ mod tests {
             command: "origin",
             workspace_instructions: "none",
             memory: "none",
+            policy: "none",
         });
 
         assert!(output.contains("origin-agent status"));
@@ -2476,7 +2519,12 @@ mod tests {
             "--- /dev/null\n+++ b/docs/summary.md\n@@ -0,0 +1,3 @@\n+# Summary\n+\n+Body\n"
         );
         validate_diff_integrity(&diff).unwrap();
-        validate_diff_targets_allowing_new_files(&diff, &["docs/summary.md".to_string()]).unwrap();
+        validate_diff_targets_allowing_new_files(
+            &diff,
+            &["docs/summary.md".to_string()],
+            &origin_tools::policy::PolicySet::empty(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2656,7 +2704,13 @@ mod tests {
             contents: "hello\n".to_string(),
         }];
 
-        let err = validate_proposed_diff(diff, &files, &mut writer).unwrap_err();
+        let err = validate_proposed_diff(
+            diff,
+            &files,
+            &origin_tools::policy::PolicySet::empty(),
+            &mut writer,
+        )
+        .unwrap_err();
         drop(writer);
 
         let transcript = fs::read_to_string(first_jsonl(root.join("sessions"))).unwrap();
@@ -2688,7 +2742,13 @@ mod tests {
             contents: "hello\n".to_string(),
         }];
 
-        let err = validate_proposed_diff(diff, &files, &mut writer).unwrap_err();
+        let err = validate_proposed_diff(
+            diff,
+            &files,
+            &origin_tools::policy::PolicySet::empty(),
+            &mut writer,
+        )
+        .unwrap_err();
         drop(writer);
 
         let transcript = fs::read_to_string(first_jsonl(root.join("sessions"))).unwrap();
@@ -2706,16 +2766,21 @@ mod tests {
         let files = readme_files();
         let mut attempts = 0;
 
-        let err =
-            request_and_validate_diff_proposal(false, &files, &mut writer, |retry_feedback| {
+        let err = request_and_validate_diff_proposal(
+            false,
+            &files,
+            &origin_tools::policy::PolicySet::empty(),
+            &mut writer,
+            |retry_feedback| {
                 attempts += 1;
                 assert!(retry_feedback.is_none());
                 Ok((
                     invalid_count_diff().to_string(),
                     DiffProposal::new(invalid_count_diff()),
                 ))
-            })
-            .unwrap_err();
+            },
+        )
+        .unwrap_err();
         drop(writer);
 
         let transcript = fs::read_to_string(first_jsonl(root.join("sessions"))).unwrap();
@@ -2733,7 +2798,7 @@ mod tests {
         let mut attempts = 0;
 
         let proposal =
-            request_and_validate_diff_proposal(true, &files, &mut writer, |retry_feedback| {
+            request_and_validate_diff_proposal(true, &files, &origin_tools::policy::PolicySet::empty(), &mut writer, |retry_feedback| {
                 attempts += 1;
                 if attempts == 1 {
                     assert!(retry_feedback.is_none());
@@ -2774,18 +2839,24 @@ mod tests {
         let files = readme_files();
         let mut attempts = 0;
 
-        let err = request_and_validate_diff_proposal(true, &files, &mut writer, |retry_feedback| {
-            attempts += 1;
-            if attempts == 1 {
-                assert!(retry_feedback.is_none());
-            } else {
-                assert!(retry_feedback.unwrap().message().contains("line count"));
-            }
-            Ok((
-                invalid_count_diff().to_string(),
-                DiffProposal::new(invalid_count_diff()),
-            ))
-        })
+        let err = request_and_validate_diff_proposal(
+            true,
+            &files,
+            &origin_tools::policy::PolicySet::empty(),
+            &mut writer,
+            |retry_feedback| {
+                attempts += 1;
+                if attempts == 1 {
+                    assert!(retry_feedback.is_none());
+                } else {
+                    assert!(retry_feedback.unwrap().message().contains("line count"));
+                }
+                Ok((
+                    invalid_count_diff().to_string(),
+                    DiffProposal::new(invalid_count_diff()),
+                ))
+            },
+        )
         .unwrap_err();
         drop(writer);
 
@@ -2804,22 +2875,28 @@ mod tests {
         let files = readme_files();
         let mut attempts = 0;
 
-        let err = request_and_validate_diff_proposal(true, &files, &mut writer, |retry_feedback| {
-            attempts += 1;
-            if attempts == 1 {
-                assert!(retry_feedback.is_none());
-                Ok((
-                    invalid_count_diff().to_string(),
-                    DiffProposal::new(invalid_count_diff()),
-                ))
-            } else {
-                assert!(retry_feedback.unwrap().message().contains("line count"));
-                Ok((
-                    cargo_toml_diff().to_string(),
-                    DiffProposal::new(cargo_toml_diff()),
-                ))
-            }
-        })
+        let err = request_and_validate_diff_proposal(
+            true,
+            &files,
+            &origin_tools::policy::PolicySet::empty(),
+            &mut writer,
+            |retry_feedback| {
+                attempts += 1;
+                if attempts == 1 {
+                    assert!(retry_feedback.is_none());
+                    Ok((
+                        invalid_count_diff().to_string(),
+                        DiffProposal::new(invalid_count_diff()),
+                    ))
+                } else {
+                    assert!(retry_feedback.unwrap().message().contains("line count"));
+                    Ok((
+                        cargo_toml_diff().to_string(),
+                        DiffProposal::new(cargo_toml_diff()),
+                    ))
+                }
+            },
+        )
         .unwrap_err();
         drop(writer);
 
@@ -2843,6 +2920,7 @@ mod tests {
             DiffProposal::new(valid_readme_diff()),
             false,
             &files,
+            &origin_tools::policy::PolicySet::empty(),
             &mut writer,
             &mut |feedback| {
                 request_attempts += 1;
@@ -2880,6 +2958,7 @@ mod tests {
             DiffProposal::new(valid_readme_diff()),
             true,
             &files,
+            &origin_tools::policy::PolicySet::empty(),
             &mut writer,
             &mut |feedback| {
                 request_attempts += 1;
@@ -2929,6 +3008,7 @@ mod tests {
             DiffProposal::new(valid_readme_diff()),
             true,
             &files,
+            &origin_tools::policy::PolicySet::empty(),
             &mut writer,
             &mut |feedback| {
                 request_attempts += 1;
@@ -2966,6 +3046,7 @@ mod tests {
             DiffProposal::new(valid_readme_diff()),
             true,
             &files,
+            &origin_tools::policy::PolicySet::empty(),
             &mut writer,
             &mut |feedback| {
                 request_attempts += 1;
@@ -3004,6 +3085,7 @@ mod tests {
             DiffProposal::new(valid_readme_diff()),
             true,
             &files,
+            &origin_tools::policy::PolicySet::empty(),
             &mut writer,
             &mut |feedback| {
                 request_attempts += 1;

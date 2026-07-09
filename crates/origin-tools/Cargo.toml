@@ -6,6 +6,8 @@ rust-version.workspace = true
 
 [dependencies]
 origin-protocol = { path = "../origin-protocol" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [lints]
 workspace = true

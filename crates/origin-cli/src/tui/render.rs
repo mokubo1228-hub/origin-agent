@@ -1450,7 +1450,7 @@ pub(super) fn format_tui_status(status: &StatusSnapshot) -> String {
         }
     }
     output.push_str(&format!(
-        "\n  git:      {}\n  cwd:      {}\n\nContext:\n  workspace instructions: {}\n  memory:                 {}\n  resumed session:        {}\n\nProvider:\n  id:       {}\n  kind:     {}\n  base_url: {}\n  auth:     {}\n\nRouting / Tradeoff:\n  route:      {}\n  privacy:    {}\n  quota/cost: {}\n  best for:   {}\n\nConfig:\n  path:     {}\n  sessions: {}\n\nPending proposal:\n  status:   {}",
+        "\n  git:      {}\n  cwd:      {}\n\nContext:\n  workspace instructions: {}\n  memory:                 {}\n  resumed session:        {}\n  policy:                 {}\n\nProvider:\n  id:       {}\n  kind:     {}\n  base_url: {}\n  auth:     {}\n\nRouting / Tradeoff:\n  route:      {}\n  privacy:    {}\n  quota/cost: {}\n  best for:   {}\n\nConfig:\n  path:     {}\n  sessions: {}\n\nPending proposal:\n  status:   {}",
         status.git_state,
         status.cwd,
         format_workspace_instructions_status(status),
@@ -1460,6 +1460,7 @@ pub(super) fn format_tui_status(status: &StatusSnapshot) -> String {
             .as_deref()
             .map(|session_id| format!("{} (background only)", redact_sensitive_text(session_id)))
             .unwrap_or_else(|| "none".to_string()),
+        format_policy_status(status),
         status.provider_id,
         status.provider_kind,
         status.base_url,
@@ -1531,6 +1532,24 @@ pub(super) fn format_user_memory_status(status: &StatusSnapshot) -> String {
         }
         _ => "none — add ~/.origin/memory.md for cross-session notes".to_string(),
     }
+}
+
+/// policy(P1)の /status 1行。件数と警告だけで、パターン本文は出さない(P-5)。
+pub(super) fn format_policy_status(status: &StatusSnapshot) -> String {
+    if let Some(warning) = &status.policy_warning {
+        return format!("ignored ({})", redact_sensitive_text(warning));
+    }
+    if status.policy_workspace_rules == 0 && status.policy_user_rules == 0 {
+        return "none".to_string();
+    }
+    let mut parts = Vec::new();
+    if status.policy_workspace_rules > 0 {
+        parts.push(format!("workspace {} rules", status.policy_workspace_rules));
+    }
+    if status.policy_user_rules > 0 {
+        parts.push(format!("user {} rules", status.policy_user_rules));
+    }
+    parts.join(" · ")
 }
 
 /// 今の状態から「次に何をすればいいか」を1行で選ぶ。
