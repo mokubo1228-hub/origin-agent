@@ -704,6 +704,7 @@ Shipped in `v1.4.0` (was the confirmed post-v1.3 sequencing):
 Post-v1.4 direction:
 
 * released as `v1.5.0` (2026-07-09) — Ask/Agent mode contract lines plus `/mode` switch recording into the in-session conversation context; `~/.origin/memory.md` read-only user memory (origin never writes it; metadata-only transcript); the `/resume` resume picker and lightweight resume (bounded read-only background, no state restoration); the one-line context tray; manual `/compact` conversation compaction; `/status` daily information design (Now / Context / diagnostics / Privacy / Next); TUI wording/visual-grammar unification; and `docs/design/design.md` as the experience standard.
+* released as `v1.6.0` (2026-07-09) — the deny-only policy harness (`.origin/policy.toml` + `~/.origin/policy.toml` read/write deny, enforced in the validation layer on every read/write path; no allow syntax; unchanged behavior with no policy files).
 * future backlog (direction only, not scheduled) — an agent-written memory path (which would need its own explicit approval gate) and a richer sessions viewer; no committed next phase until the product owner decides.
 * deferred — the Agent / Proposal input-model unification (removing instant `y` / `n`) once labeled "23.5.6".
 

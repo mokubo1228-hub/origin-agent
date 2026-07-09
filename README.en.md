@@ -11,7 +11,7 @@ UX — kept deliberately small, controllable, and human-approved.
 
 ![origin-agent startup landing](docs/assets/landing.png)
 
-> **Latest release: v1.5.0** · full history in [`CHANGELOG.md`](CHANGELOG.md).
+> **Latest release: v1.6.0** · full history in [`CHANGELOG.md`](CHANGELOG.md).
 > Not a replacement for Claude Code or Codex — those stay the right tools for broad,
 > fast, multi-file implementation work. `origin-agent` is the smaller, controllable
 > alternative for file-scoped, human-approved edits with the model and provider *you* choose.

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.6.0 - 2026-07-09
+
+### Policy harness (deny rules)
+
+- origin now reads deny-only policy files: `<cwd>/.origin/policy.toml` (workspace) and `~/.origin/policy.toml` (user), merged as a union. Supported sections are `[read] deny = [...]` and `[write] deny = [...]` with a small documented glob subset (`NAME`, `*.ext`, `dir/**`, `dir/sub/name`; `*` never crosses `/`). Policy can only restrict: there is no allow/override syntax, the built-in safe-path rules still run first, and a policy file can never grant permissions or bypass approval.
+- Write deny is enforced inside diff target validation, so every write path — Agent proposals, manual `/propose`, shell, and the non-git single new-file gate — fails before `git apply --check` with `denied by workspace policy (.origin/policy.toml): <path>`. The Agent planner also checks targets early and falls back to clarification instead of opening a review. Deny is stronger than an explicit user mention; the only way to lift a rule is editing the policy file.
+- Read deny is enforced before any file body is read: explicitly mentioned files are skipped with a visible `denied by ... policy` diagnostic, and workspace-overview candidates matching a read deny never appear in the tree or context. Deny pattern lists are never sent to the provider or written to transcripts — only the denied path itself can appear.
+- `/status` gains a `policy:` line (`workspace N rules · user N rules` / `none` / `ignored (reason)`), CLI `origin status` gains the same field, and a broken policy file produces a visible startup warning instead of being silently ignored (a policy that quietly stops applying is treated as the worst failure mode).
+- With no policy files present, behavior is completely unchanged. Approval semantics, `/diff` / `/check` / `/apply`, and all safety gates are untouched.
+
 ## v1.5.0 - 2026-07-09
 
 Post-v1.4 daily-use UX release: mode awareness, minimal user-owned memory, a lightweight resume picker, an always-visible context tray, manual conversation compaction, `/status` information design, and TUI wording/visual-grammar unification. The safety model, approval semantics, and `/diff` / `/check` / `/apply` behavior are unchanged.

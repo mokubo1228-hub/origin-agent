@@ -365,6 +365,7 @@ Phase 23.4 の受け入れ済み解釈:
   - Phase 26 explicit model selection — 起動時の silent auto-select を廃止し、`No model selected — press /model to choose` を出して選択まで送信を block。`/model` picker は発見済み候補を 1-`Enter` recommendation として提示。
 - post-v1.4 direction:
   - **`v1.5.0` として release 済み(2026-07-09)** — Ask/Agent mode contract 行 + `/mode` 切替の会話コンテキスト記録、`~/.origin/memory.md` の read-only user memory(origin は書かない・metadata-only transcript)、`/resume` の resume picker + lightweight resume(bounded read-only background、状態復元なし)、composer 直上の context tray、手動 `/compact`(会話コンテキスト圧縮)、`/status` の daily 情報設計(Now / Context / 診断 / Privacy / Next)、wording / visual grammar 統一、`docs/design/design.md`(体験標準)。
+  - **P1 policy harness は `v1.6.0` として release 済み(2026-07-09)**(deny-only policy)。
   - future backlog(direction のみ・未スケジュール)— agent が memory を書く経路(必ず専用の明示承認 gate が要る)、sessions viewer の拡充。次の committed phase は product owner の判断待ち。
 
 近い将来の default にしないもの:

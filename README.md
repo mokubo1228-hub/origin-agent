@@ -11,7 +11,7 @@ aider 的なモデル/プロバイダの自由度と、Codex / Gemini CLI のよ
 
 ![origin-agent 起動画面](docs/assets/landing.png)
 
-> **最新リリース: v1.5.0** · 履歴は [`CHANGELOG.md`](CHANGELOG.md)。
+> **最新リリース: v1.6.0** · 履歴は [`CHANGELOG.md`](CHANGELOG.md)。
 > Claude Code / Codex の置き換えではない — 広範・高速・多ファイルの実装はそちらが適任。
 > `origin-agent` は、自分で選んだモデルとプロバイダで「ファイル単位・人間承認つき」に
 > 編集するための、小さく制御可能な選択肢。
@@ -35,6 +35,8 @@ aider のモデル自由度、Codex / Gemini CLI のターミナルネイティ�
   ベンダーに固定しない。
 - **既定で安全第一** — create / update / write はすべて明示的な `y / n` 人間
   ゲートを通る。自動適用は一切なし。範囲外・壊れた・削除・リネームの diff は拒否。
+  `.origin/policy.toml` の deny-only policy で「読まない・書かない」領域を
+  ワークスペースごとに強制できる(許可を増やす構文は存在しない)。
 - **明示スコープ編集** — 対象ファイルを指定 → モデルが unified diff を返す →
   origin がローカルで構築・検証 → `git apply --check` を通った patch をあなたが
   承認して初めて適用。
