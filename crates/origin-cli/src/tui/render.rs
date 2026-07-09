@@ -224,15 +224,18 @@ pub(super) fn interaction_pane(state: &TuiState, width: u16) -> Paragraph<'stati
     Paragraph::new(interaction_lines(state, width))
 }
 
-/// 下部ペインの総高さを、表示中の構成要素(palette・review・composer 枠・本文・footer)の
-/// 行数を足して算出する。render の Length 制約と一致させるため、計算をここに集約する。
+/// 下部ペインの総高さを、表示中の構成要素(palette・review・tray・composer 枠・本文・footer)
+/// の行数を足して算出する。render の Length 制約と一致させるため、計算をここに集約する。
+/// tray の有無は描画側と同じ context_tray_line で判定する(表示条件の二重実装を作らない)。
 pub(super) fn interaction_pane_height(state: &TuiState) -> u16 {
     let composer_lines = composer_line_count(&state.input).min(MAX_INPUT_TEXT_LINES);
     let footer_lines = 1;
     let command_palette_lines = command_palette_line_count(state);
     let review_panel_lines = review_panel_line_count(state, 80);
+    let context_tray_lines = u16::from(context_tray_line(state, 80).is_some());
     command_palette_lines
         + review_panel_lines
+        + context_tray_lines
         + COMPOSER_BORDER_LINES
         + composer_lines
         + footer_lines
@@ -254,7 +257,60 @@ pub(super) fn command_palette_line_count(state: &TuiState) -> u16 {
     }
 }
 
-/// 下部ペインの全行を順に積む:slash 候補 → review パネル → composer → footer ヒント。
+/// 持続文脈のトークン列を組む pure 関数(Phase B)。
+/// 出すのは「次のリクエストにも自動で注入される持続文脈」だけ — per-request のファイル言及や
+/// workspace overview は出さない(F-10: その場限りの注入を常設表示すると嘘になる)。
+/// トークンは固定語 + 数値のみで、本文・path・session id・provider id・secret を含まない。
+/// 順序は /status の Context 節と同一(ORIGIN.md → memory → resumed → history。
+/// `notes N`(N1)/ `files N`(F)はこの間のスロットに将来入る — 契約 §2)。
+pub(super) fn context_tray_tokens(
+    workspace_instructions: &WorkspaceInstructions,
+    user_memory: &UserMemory,
+    resumed: Option<&TuiResumedSession>,
+    history_len: usize,
+) -> Vec<String> {
+    let mut tokens = Vec::new();
+    // 表示条件 = 注入条件(body() が Some の時だけ provider に渡る)。skipped は出さない。
+    if workspace_instructions.body().is_some() {
+        tokens.push("ORIGIN.md".to_string());
+    }
+    if user_memory.body().is_some() {
+        tokens.push("memory".to_string());
+    }
+    if resumed.is_some() {
+        tokens.push("resumed".to_string());
+    }
+    if history_len > 0 {
+        tokens.push(format!("history {history_len}"));
+    }
+    tokens
+}
+
+/// composer 直上の context tray 1行(Dim・read-only 表示専用)。
+/// 持続文脈が1つも無い時と、write permission gate(proposal review / pending apply)
+/// 表示中は None — 承認の瞬間の画面を最小にし、tray が gate の一部に見える余地を消す。
+/// 表示条件はこの関数だけが持ち、interaction_lines と interaction_pane_height と
+/// composer_cursor_position がすべてこれを使う(ズレ防止)。
+pub(super) fn context_tray_line(state: &TuiState, width: u16) -> Option<Line<'static>> {
+    if is_permission_gate_active(state) {
+        return None;
+    }
+    let tokens = context_tray_tokens(
+        &state.workspace_instructions,
+        &state.user_memory,
+        state.resumed_session.as_ref(),
+        state.active_context.entries.len(),
+    );
+    if tokens.is_empty() {
+        return None;
+    }
+    // footer_hint が2スペースの indent を足すぶんを引いた幅で末尾切りする(選択的省略はしない)。
+    let text = format!("context: {}", tokens.join(" · "));
+    let max_chars = (width.max(12) as usize).saturating_sub(2);
+    Some(style::footer_hint(&fit_to_width(&text, max_chars)))
+}
+
+/// 下部ペインの全行を順に積む:slash 候補 → review パネル → context tray → composer → footer。
 pub(super) fn interaction_lines(state: &TuiState, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if should_show_slash_suggestions(state) {
@@ -262,6 +318,9 @@ pub(super) fn interaction_lines(state: &TuiState, width: u16) -> Vec<Line<'stati
     }
 
     lines.extend(review_panel_lines(state, width));
+    if let Some(tray) = context_tray_line(state, width) {
+        lines.push(tray);
+    }
     let (affordance, is_live_composer) = composer_affordance(state);
     lines.extend(composer_cell_lines_with_placeholder(
         &state.input,
@@ -282,6 +341,7 @@ pub(super) fn interaction_lines(state: &TuiState, width: u16) -> Vec<Line<'stati
         state.chat_in_flight.is_some(),
         state.model_route_picker.is_some(),
         state.resume_picker.is_some(),
+        state.compact_in_flight.is_some(),
         has_pending_agent_plan(state),
         state.pending_agent_new_file_override,
         state.show_advanced_actions,
@@ -325,6 +385,10 @@ pub(super) fn review_panel_lines(state: &TuiState, width: u16) -> Vec<Line<'stat
     if let Some(generation) = state.agent_generation.as_ref() {
         let can_interrupt = generation.interruptible && state.agent_propose_in_flight.is_some();
         return agent_generation_panel_lines(generation, can_interrupt, width);
+    }
+
+    if let Some(in_flight) = state.compact_in_flight.as_ref() {
+        return compact_panel_lines(in_flight.started_at, width);
     }
 
     if let Some(in_flight) = state.chat_in_flight.as_ref() {
@@ -636,6 +700,31 @@ pub(super) fn agent_planning_panel_lines(started_at: Instant, width: u16) -> Vec
             body: vec![
                 working_indicator_line(
                     "Planning",
+                    started_at,
+                    Some("Esc/Ctrl+C to interrupt"),
+                    width,
+                ),
+                style::BodyLine::Blank,
+                style::BodyLine::Text("Waiting for provider".to_string()),
+                style::BodyLine::Text("No files will be changed.".to_string()),
+            ],
+            actions: None,
+            advanced: Vec::new(),
+            show_advanced: false,
+        },
+        width,
+    )
+}
+
+/// /compact の要約中パネル。ファイル不変で、Esc/Ctrl+C で実際に中断できる(表示と実挙動一致)。
+pub(super) fn compact_panel_lines(started_at: Instant, width: u16) -> Vec<Line<'static>> {
+    style::render_panel(
+        &style::PanelView {
+            tone: style::PanelTone::Active,
+            title: "Compacting conversation".to_string(),
+            body: vec![
+                working_indicator_line(
+                    "Compacting",
                     started_at,
                     Some("Esc/Ctrl+C to interrupt"),
                     width,
@@ -989,19 +1078,22 @@ pub(super) fn composer_affordance(state: &TuiState) -> (&'static str, bool) {
     }
 }
 
-/// 端末カーソルの実座標を、上に積まれた palette / review の行数と composer 枠ぶん下げて算出する。
+/// 端末カーソルの実座標を、上に積まれた palette / review / tray の行数と composer 枠ぶん
+/// 下げて算出する。tray の有無は描画と同じ context_tray_line で判定する。
 pub(super) fn composer_cursor_position(state: &TuiState, interaction_area: Rect) -> Position {
     let palette_lines = command_palette_line_count(state);
     let review_lines = review_panel_line_count(state, interaction_area.width);
+    let tray_lines = u16::from(context_tray_line(state, interaction_area.width).is_some());
     let cursor = composer_cursor_offset(&state.input, state.input_cursor);
     let max_x = interaction_area.width.saturating_sub(2).max(1);
-    // composer は palette/review の下・枠の内側にあるので、その行数+枠ぶん(+2)下げて入力行頭に合わせる。
+    // composer は palette/review/tray の下・枠の内側にあるので、その行数+枠ぶん(+2)下げて入力行頭に合わせる。
     Position {
         x: interaction_area.x.saturating_add(cursor.x.min(max_x)),
         y: interaction_area
             .y
             .saturating_add(palette_lines)
             .saturating_add(review_lines)
+            .saturating_add(tray_lines)
             .saturating_add(2)
             .saturating_add(cursor.y),
     }
@@ -1020,6 +1112,7 @@ pub(super) fn footer_text(
     has_chat_in_flight: bool,
     has_model_route_picker: bool,
     has_resume_picker: bool,
+    has_compact_in_flight: bool,
     has_pending_agent_plan: bool,
     has_agent_target_override: bool,
     advanced_revealed: bool,
@@ -1027,6 +1120,8 @@ pub(super) fn footer_text(
 ) -> &'static str {
     if has_resume_picker {
         "Up/Down select · Enter resume · Esc cancel"
+    } else if has_compact_in_flight {
+        "Compacting · Esc/Ctrl+C to interrupt"
     } else if has_model_route_picker {
         "Up/Down select · Enter use route · Esc cancel"
     } else if has_pending_apply {
@@ -1151,7 +1246,8 @@ pub(super) fn tui_help_text() -> String {
         "  /model set <provider>/<model-id>   Switch provider + model together (session-local).",
         "  /provider | /provider list  Show / list providers (diagnostics).",
         "  /provider set <provider-id> Switch provider (session-local).",
-        "  /sessions                   Show recent saved sessions.",
+        "  /sessions                   Show recent saved sessions.
+  /compact                    Summarize the conversation context (files never change).",
         "  /quit                       Quit the TUI.",
         "  Switching is session-local and never rewrites ~/.origin/config.toml.",
         "",

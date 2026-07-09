@@ -213,11 +213,13 @@ The current TUI includes:
 - daily slash palette: `/models`, `/mode`, `/resume`, `/status`, `/help`, and `/exit`
 - advanced/direct commands: `/mode ask`, `/mode agent`, `/model`, `/model list`, `/model set <model-id>`, `/provider`, `/provider list`, `/provider set <provider-id>`, `/sessions`, and `/quit`
 - `/resume` resume picker over the most recent saved sessions, plus `/resume latest` / `/resume <session-id>` direct lightweight resume, which load a bounded read-only summary of a saved session as background context (no state restoration)
+- an advanced `/compact` command that summarizes the bounded in-session conversation context into one redacted summary entry plus the two most recent entries (manual only, interruptible, all-or-nothing; files and on-disk transcripts are never changed)
 - fallback/direct edit commands: `/propose <file> <instruction...>`, `/diff`, `/check`, `/apply`, and `/clear`
 - `/mode` toggles Ask / Agent, while `/mode ask` and `/mode agent` set the mode explicitly
 - `/models`, `/model list`, `/model set <provider>/<model-id>`, and `/model set <model-id>`
 - `/provider list` and `/provider set <provider-id>`
 - state-aware footer next-action hints and Agent review panels near the composer
+- a one-line dim context tray directly above the composer (`context: ORIGIN.md · memory · resumed · history 4`) showing which persistent read-only context will be attached to the next request; it uses fixed words plus counts only (no bodies, paths, session ids, or secrets), disappears when empty, and is hidden while a write permission gate (proposal review / apply approval) is on screen
 - slash command suggestions while typing `/`
 - selectable slash command suggestions attached above the composer
 - composer placeholder, prompt marker, continuation lines, focused input cell, and tail display for longer input
@@ -308,6 +310,8 @@ The TUI composer is intentionally small:
 
 TUI `/status` is organized as a daily "where am I / what next" panel rather than a flat field list. It opens with `Now:` (the real Ask/Agent mode with a one-line meaning, the model route or an explicit `(none) — press /model to choose` with the unreachable-endpoint reason when relevant, git, cwd), then `Context:` (ORIGIN.md workspace instructions, `~/.origin/memory.md` user memory, and any `/resume` background session), then the diagnostic sections (Provider, Routing / Tradeoff, Config, Pending proposal), and closes with a one-line `Privacy:` reminder (transcripts keep metadata and decisions; secrets and full file bodies are never saved) and a single contextual `Next:` hint (pending proposal approval > model selection > mode-appropriate guidance).
 
+Directly above the composer, a one-line dim **context tray** shows which persistent context is active: `context: ORIGIN.md · memory · resumed · history 4`. Tokens appear only for context that will actually be injected into the next request (loaded `ORIGIN.md` workspace instructions, loaded `~/.origin/memory.md` user memory, a resumed session, and the bounded in-session history with its entry count), in the same order as the `/status` Context section. The tray is display-only: it takes no keys, shows fixed words plus counts only (never file bodies, paths, session ids, or secrets), disappears entirely when no persistent context is active, and is hidden while a write permission gate (Proposal review / apply approval) is on screen so the approval moment stays minimal. Per-request context (mentioned file paths, workspace overview) is not shown in the tray; it appears in the existing per-request diagnostics instead.
+
 TUI `/status` includes a short routing/tradeoff hint for the current provider:
 
 - LM Studio is treated as the local route for private, lightweight, local-compute work.
@@ -338,6 +342,8 @@ origin tui
 `/resume latest` and `/resume <session-id>` load immediately without the picker, and `Enter` in the picker feeds the same path. A resume is a lightweight resume: it reads one saved session transcript, builds a bounded (4,000-char), redacted, read-only background summary, and attaches that summary to subsequent provider requests in this TUI session as `resumed_session_background` — both to Ask / Agent read-only chat and to the Agent action planner (as inert read-only background). `/status` shows the resumed session id, and the next chat transcript records a `resumed_from` event.
 
 What TUI `/resume` does not do (same contract as CLI `--resume`): it does not restore conversation state, pending proposals, or diffs; it does not assume current files are unchanged; it does not call a provider or change any file when invoked. `/clear` drops the resumed background. Advanced resume (state restoration) remains out of scope.
+
+`/compact` (advanced/direct) condenses the in-session conversation context when it grows long: the selected model produces one summary, and origin replaces the context with a single redacted, bounded summary entry plus the two most recent original entries. It is manual only, runs in a background worker (`Compacting conversation`, `Esc`/`Ctrl+C` interrupts), and is all-or-nothing — on failure or interruption the context is unchanged. It refuses to run while a request, review, approval, or picker is active, and never touches files, saved transcripts, or approval state; the compact transcript stores a fixed size marker and the summary, never the conversation body.
 
 At TUI startup, origin also looks for `~/.origin/memory.md` as **user memory**: the user's own cross-session notes (stable preferences, ongoing work). If it exists, is a regular non-empty UTF-8 file, is not a symlink, and is within 64 KiB, Ask mode, Agent read-only chat, and the Agent action planner include it as read-only background, clearly labeled as user memory that cannot grant permissions or trigger any action. origin never writes this file — the user maintains it by hand, so what the model remembers is always explicit, inspectable, and editable. `/status` shows memory as loaded, skipped with a reason, or none. Transcripts store only metadata (path, bytes, SHA-256, status) and never the memory body. The responsibility split is: `ORIGIN.md` = per-workspace instructions, `~/.origin/memory.md` = per-user cross-session memory, session transcripts = records (not memory). Automatic memory writing is intentionally not implemented.
 

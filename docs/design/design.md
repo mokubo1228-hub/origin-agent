@@ -45,6 +45,7 @@ origin-agent の TUI がどう「見え」「話し」「待つ」かの標準�
 | 通常 chat 応答待ち | `Waiting for model` | Active | `Draft editable · Enter waits` を添える |
 | provider 待ちの説明行 | `Waiting for provider` | Active | ellipsis なし |
 | 承認後の保存中 | `Saving` / `Checking and writing` | Active | indicator は1本(逐次処理を並列に見せない) |
+| 会話コンテキスト圧縮中 | `Compacting` | Active | panel title は `Compacting conversation`。Esc/Ctrl+C で実際に中断可 |
 | 作成完了 | `Created` | Ready | 本文に `Ready.` |
 | 更新完了 | `Updated` | Ready | |
 | 取消 | `Cancelled` | Dim | `No files were changed.` を必ず添える |
@@ -62,6 +63,7 @@ origin-agent の TUI がどう「見え」「話し」「待つ」かの標準�
 1. **plan/action selection** — 「どの案で進めるか」。番号 + `Up`/`Down` + `Enter`。書き込みは一切起きない。Agent review / clarification がこれ。
 2. **permission gate** — 「外部状態を変えてよいか」。`y` / `n` の縦2択。`Enter` 承認は明示的な permission panel の中でだけ許す(通常 composer の Enter が承認になってはいけない)。Proposal review がこれ。
 3. `Esc` は「今開いている最も手前のもの」から畳む: picker → proposal reject → target override → agent plan → 終了。
+4. **context tray**(composer 直上の `context: ORIGIN.md · memory · resumed · history N` 1行、Dim)は read-only の presence 表示であって selection でも approval でもない。キーを取らず、固定語 + 数値のみ(本文・path・id を出さない)、permission gate 中は不在。
 
 `y` は「外部状態を変える」、`n` は「変えない(`Cancel / no files changed`)」。plan 選択に y/n を使わない。承認に番号を使わない。
 

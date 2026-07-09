@@ -85,6 +85,7 @@ pub(super) fn handle_tui_command(state: &mut TuiState, command: TuiCommand) {
                 ))),
         },
         TuiCommand::ResumePicker => open_resume_picker(state),
+        TuiCommand::Compact => start_tui_compact(state),
         TuiCommand::Resume { target } => run_tui_resume(state, target),
         TuiCommand::Propose { path, instruction } => run_tui_propose(state, path, instruction),
         TuiCommand::AgentPropose { path, instruction } => start_tui_agent_propose(
@@ -676,6 +677,273 @@ fn take_selected_resume_session_id(state: &mut TuiState) -> Option<String> {
     let session_id = picker.candidates.get(picker.selected)?.session_id.clone();
     close_resume_picker(state);
     Some(session_id)
+}
+
+/// `/compact` の実体(CP1)。会話 active context をモデル要約で
+/// 「summary 1件 + 直近2件の原文」へ畳む。対象はメモリ内の active context のみで、
+/// transcript・ファイル・pending 状態には一切触れない(D-CP-1〜3)。
+/// 失敗・中断・late result のどの場合も context は無傷(all-or-nothing)。
+pub(super) fn start_tui_compact(state: &mut TuiState) {
+    // 進行中フローが参照している文脈を足元から書き換えないための guard(契約 §1)。
+    if is_any_provider_call_in_flight(state)
+        || has_blocking_agent_flow(state)
+        || is_permission_gate_active(state)
+        || is_any_overlay_open(state)
+        || state.compact_in_flight.is_some()
+    {
+        state.messages.push(TuiMessage::Error(
+            "Compact is unavailable while a request, review, or approval is in progress.\nFinish or cancel it first, then run /compact again."
+                .to_string(),
+        ));
+        pin_chat_to_latest(state);
+        return;
+    }
+    if state.active_context.entries.is_empty() {
+        state.messages.push(TuiMessage::Action(
+            "Nothing to compact — the conversation context is empty.".to_string(),
+        ));
+        pin_chat_to_latest(state);
+        return;
+    }
+    if state.active_context.entries.len() < COMPACT_MIN_ENTRIES {
+        state.messages.push(TuiMessage::Action(format!(
+            "Context is already small ({} items) — nothing to compact.",
+            state.active_context.entries.len()
+        )));
+        pin_chat_to_latest(state);
+        return;
+    }
+
+    let Some(context_text) = state.active_context.provider_context() else {
+        state.messages.push(TuiMessage::Action(
+            "Nothing to compact — the conversation context is empty.".to_string(),
+        ));
+        pin_chat_to_latest(state);
+        return;
+    };
+
+    let (sender, receiver) = mpsc::channel();
+    let mut runtime = state.runtime.clone();
+    let request_id = state.next_compact_request_id;
+    state.next_compact_request_id = state.next_compact_request_id.wrapping_add(1);
+    let baseline = state.active_context.entries.clone();
+
+    thread::spawn(move || {
+        let result = run_compact_with_runtime(&mut runtime, &context_text);
+        let _ = sender.send(TuiCompactWorkerResult {
+            request_id,
+            runtime,
+            result,
+        });
+    });
+
+    state.compact_in_flight = Some(TuiCompactInFlight {
+        request_id,
+        receiver,
+        baseline,
+        started_at: Instant::now(),
+    });
+    pin_chat_to_latest(state);
+}
+
+/// 進行中の /compact worker を1回だけ非ブロッキングで polling する。
+/// request_id 不一致の late result は破棄する(interrupt 後の古い結果を適用しない)。
+pub(super) fn poll_tui_compact_worker(state: &mut TuiState) {
+    let worker_result = match state.compact_in_flight.as_ref() {
+        Some(in_flight) => match in_flight.receiver.try_recv() {
+            Ok(result) => Some(Ok(result)),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(
+                "Compact worker disconnected before returning a response.".to_string(),
+            )),
+        },
+        None => None,
+    };
+
+    match worker_result {
+        Some(Ok(worker_result)) => {
+            let Some(in_flight) = state.compact_in_flight.take() else {
+                return;
+            };
+            if worker_result.request_id != in_flight.request_id {
+                return;
+            }
+            state.runtime = worker_result.runtime;
+            refresh_status(state);
+            apply_compact_result(state, in_flight.baseline, worker_result.result);
+        }
+        Some(Err(error)) => {
+            let Some(in_flight) = state.compact_in_flight.take() else {
+                return;
+            };
+            apply_compact_result(state, in_flight.baseline, Err(error));
+        }
+        None => {}
+    }
+}
+
+/// /compact worker の結果を active context に反映する終端(テストからは結果を注入して呼べる)。
+/// Ok: entries を「summary + baseline 末尾2件 + 開始後に積まれた entries」へ置き換える。
+/// Err / 空要約: context には一切触れず失敗を通知する(all-or-nothing)。
+pub(super) fn apply_compact_result(
+    state: &mut TuiState,
+    baseline: Vec<TuiActiveConversationEntry>,
+    result: Result<String, String>,
+) {
+    match result {
+        Ok(raw_summary) => {
+            let summary = bounded_summary_text(&raw_summary);
+            if summary.is_empty() {
+                state.messages.push(TuiMessage::Error(
+                    "Compact failed.\nReason: the model returned an empty summary.\nThe conversation context is unchanged."
+                        .to_string(),
+                ));
+                pin_chat_to_latest(state);
+                return;
+            }
+
+            let before_items = baseline.len();
+            let before_chars: usize = baseline
+                .iter()
+                .map(|entry| entry.text.chars().count())
+                .sum();
+            let appended = entries_appended_since(&state.active_context.entries, &baseline);
+            let kept: Vec<TuiActiveConversationEntry> =
+                baseline.iter().rev().take(2).rev().cloned().collect();
+            let kept_count = kept.len();
+
+            state.active_context.entries.clear();
+            state.active_context.push_summary(&summary);
+            state.active_context.entries.extend(kept);
+            state.active_context.entries.extend(appended);
+            state.active_context.trim();
+
+            let after_chars: usize = state
+                .active_context
+                .entries
+                .iter()
+                .map(|entry| entry.text.chars().count())
+                .sum();
+            state.messages.push(TuiMessage::Action(format!(
+                "Context compacted: {before_items} items ({before_chars} chars) → summary + {kept_count} recent ({after_chars} chars)."
+            )));
+        }
+        Err(error) => {
+            state.messages.push(TuiMessage::Error(format!(
+                "Compact failed.\nReason: {}\nThe conversation context is unchanged.",
+                redact_sensitive_text(&error)
+            )));
+        }
+    }
+    pin_chat_to_latest(state);
+}
+
+/// baseline(圧縮開始時の entries)以降に積まれた entries を取り出す。
+/// trim は古い側からしか落とさないため、現 entries は「baseline の末尾一部 + 追加分」の形。
+/// baseline の suffix と一致する最長 prefix を除いた残りが追加分になる。
+fn entries_appended_since(
+    current: &[TuiActiveConversationEntry],
+    baseline: &[TuiActiveConversationEntry],
+) -> Vec<TuiActiveConversationEntry> {
+    for skip in 0..=baseline.len() {
+        let base_tail = &baseline[skip..];
+        if current.len() >= base_tail.len() && &current[..base_tail.len()] == base_tail {
+            return current[base_tail.len()..].to_vec();
+        }
+    }
+    current.to_vec()
+}
+
+/// 進行中の /compact を中断する(Esc / Ctrl+C)。context は無傷のまま、
+/// late result は request_id guard と in_flight 破棄で二重に捨てる。
+pub(super) fn interrupt_compact(state: &mut TuiState) {
+    state.compact_in_flight = None;
+    state.messages.push(TuiMessage::Action(
+        "Interrupted\n\nThe conversation context is unchanged.\n\nReady.".to_string(),
+    ));
+    pin_chat_to_latest(state);
+}
+
+/// /compact の provider 往復本体(worker thread 側)。model 解決 → 固定プロンプトで
+/// 1回だけ complete_chat し、transcript には context 本文でなく固定マーカーを記録する(D-CP-3)。
+pub(super) fn run_compact_with_runtime(
+    runtime: &mut RuntimeState,
+    context_text: &str,
+) -> Result<String, String> {
+    let model = runtime.ensure_model_for_chat()?.to_string();
+    let mut session = SessionWriter::create("compact").map_err(|error| error.to_string())?;
+    let result = run_compact_with_session(&runtime.provider, &model, context_text, &mut session);
+    let status = if result.is_ok() { "success" } else { "error" };
+    if let Err(error) = &result {
+        let _ = session.record(SessionEvent::CommandFailed {
+            error: redact_sensitive_text(error),
+        });
+    }
+    let finish_result = session.record(SessionEvent::SessionFinished {
+        status: status.to_string(),
+    });
+    match (result, finish_result) {
+        (Ok(summary), Ok(())) => Ok(summary),
+        (Ok(_), Err(error)) => Err(error.to_string()),
+        (Err(error), _) => Err(error),
+    }
+}
+
+/// provider への1往復そのもの(テストは fake ModelProvider で叩く)。
+/// user_message は「(compact request over N context chars)」の固定マーカーのみで、
+/// 会話原文は transcript に重複保存しない(D-CP-3)。
+pub(super) fn run_compact_with_session<P: ModelProvider>(
+    provider: &P,
+    model: &str,
+    context_text: &str,
+    session: &mut SessionWriter,
+) -> Result<String, String> {
+    session
+        .record(SessionEvent::ProviderResolved {
+            provider: provider.id().as_str().to_string(),
+            base_url: provider.base_url().to_string(),
+        })
+        .map_err(|error| error.to_string())?;
+    session
+        .record(SessionEvent::ModelResolved {
+            model: model.to_string(),
+        })
+        .map_err(|error| error.to_string())?;
+    session
+        .record(SessionEvent::UserMessage {
+            text: format!(
+                "(compact request over {} context chars)",
+                context_text.chars().count()
+            ),
+        })
+        .map_err(|error| error.to_string())?;
+
+    let response = provider
+        .complete_chat(ChatRequest {
+            model: model.to_string(),
+            messages: vec![ChatMessage::user(build_compact_prompt(context_text))],
+            max_tokens: Some(400),
+        })
+        .map_err(|error| error.user_message())?;
+
+    session
+        .record(SessionEvent::ModelResponse {
+            text: response.content.clone(),
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(response.content.trim().to_string())
+}
+
+/// /compact がモデルへ渡す固定プロンプト(契約 §3)。900字指定はモデルへの指示であり、
+/// 安全側の上限は適用時の bounded_summary_text(1,200字 + redact)が保証する。
+pub(super) fn build_compact_prompt(context_text: &str) -> String {
+    format!(
+        "Summarize the following conversation context so a model can continue the session seamlessly.\n\
+Keep: the current task and its state, decisions made, file paths mentioned, unresolved questions,\n\
+and any `Mode switched to ...` facts. Drop pleasantries and repetition.\n\
+Write plain text, at most 900 characters. Do not add new information. Do not include secrets.\n\n\
+<conversation_context>\n{context_text}\n</conversation_context>"
+    )
 }
 
 /// `/resume [latest|<session-id>]` の実体。過去 transcript から bounded・redacted な

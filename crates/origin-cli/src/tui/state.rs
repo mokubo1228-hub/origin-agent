@@ -9,6 +9,10 @@ pub(super) const ACTIVE_CONTEXT_MAX_EVENTS: usize = 12;
 pub(super) const ACTIVE_CONTEXT_MAX_CHARS: usize = 3_000;
 /// 1エントリあたりの文字数上限(長文は切り詰めてから積む)。
 pub(super) const ACTIVE_CONTEXT_ENTRY_MAX_CHARS: usize = 600;
+/// /compact が作る summary entry 専用の文字数上限(通常 entry より大きい枠。D-CP-2)。
+pub(super) const ACTIVE_CONTEXT_SUMMARY_MAX_CHARS: usize = 1_200;
+/// /compact を実行する最小 entry 数。これ未満は「summary 1件 + 直近2件」に畳む意味がない。
+pub(super) const COMPACT_MIN_ENTRIES: usize = 4;
 /// TUI の対話モード。Ask は読み取り中心、Agent は提案・書き込み経路を開く。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TuiInteractionMode {
@@ -53,6 +57,8 @@ pub(super) struct TuiState {
     pub(super) result_panel: Option<TuiResultPanel>,
     pub(super) model_route_picker: Option<ModelRoutePicker>,
     pub(super) resume_picker: Option<ResumePicker>,
+    pub(super) compact_in_flight: Option<TuiCompactInFlight>,
+    pub(super) next_compact_request_id: u64,
     pub(super) interaction_mode: TuiInteractionMode,
     pub(super) active_context: TuiActiveConversationContext,
     pub(super) pending_agent_existing_edit_plan: Option<PendingAgentExistingEditPlan>,
@@ -242,6 +248,19 @@ impl TuiActiveConversationContext {
         self.trim();
     }
 
+    /// /compact の要約を summary role で1件積む。専用上限(1,200字)と redact を必ず通す。
+    pub(super) fn push_summary(&mut self, text: &str) {
+        let text = bounded_summary_text(text);
+        if text.is_empty() {
+            return;
+        }
+        self.entries.push(TuiActiveConversationEntry {
+            role: "summary",
+            text,
+        });
+        self.trim();
+    }
+
     /// 蓄積した文脈を空にする。
     pub(super) fn clear(&mut self) {
         self.entries.clear();
@@ -302,6 +321,37 @@ pub(super) fn bounded_active_context_text(text: &str) -> String {
         compact.push_str("...");
     }
     compact
+}
+
+/// summary entry 用の安全フィルタ。redact を必ず通し、専用上限(1,200字)で末尾切りする。
+/// bounded_active_context_text の summary 版(モデルの文字数指示は信用しない — D-CP-2)。
+pub(super) fn bounded_summary_text(text: &str) -> String {
+    let redacted = redact_sensitive_text(text);
+    let mut compact = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() > ACTIVE_CONTEXT_SUMMARY_MAX_CHARS {
+        compact = compact
+            .chars()
+            .take(ACTIVE_CONTEXT_SUMMARY_MAX_CHARS)
+            .collect::<String>();
+        compact.push_str("...");
+    }
+    compact
+}
+
+/// 進行中の /compact worker のハンドル。request_id(late result 破棄)と、
+/// 開始時点の entries スナップショット(all-or-nothing 適用の基準)を持つ。
+pub(super) struct TuiCompactInFlight {
+    pub(super) request_id: u64,
+    pub(super) receiver: Receiver<TuiCompactWorkerResult>,
+    pub(super) baseline: Vec<TuiActiveConversationEntry>,
+    pub(super) started_at: Instant,
+}
+
+/// /compact worker が返す結果。Ok は要約テキスト(生)。適用側で redact + bound する。
+pub(super) struct TuiCompactWorkerResult {
+    pub(super) request_id: u64,
+    pub(super) runtime: RuntimeState,
+    pub(super) result: Result<String, String>,
 }
 
 /// 進行中の chat worker のハンドル。受信端と、初回警告済みフラグ・開始時刻を持つ。
@@ -392,6 +442,7 @@ pub(super) enum TuiCommand {
     ProviderSet(String),
     Sessions,
     ResumePicker,
+    Compact,
     Resume {
         target: Option<String>,
     },

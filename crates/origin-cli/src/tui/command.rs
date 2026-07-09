@@ -113,6 +113,11 @@ pub(super) const TUI_SLASH_COMMANDS: &[SlashCommandSuggestion] = &[
         edit_loop: false,
     },
     SlashCommandSuggestion {
+        command: "/compact",
+        description: "summarize conversation context",
+        edit_loop: false,
+    },
+    SlashCommandSuggestion {
         command: "/exit",
         description: "quit TUI",
         edit_loop: false,
@@ -331,6 +336,11 @@ pub(super) fn parse_tui_command(input: &str) -> TuiSubmit {
             "Usage: /provider set <provider-id>".to_string(),
         )),
         ["/sessions"] => TuiSubmit::Command(TuiCommand::Sessions),
+        ["/compact"] => TuiSubmit::Command(TuiCommand::Compact),
+        ["/compact", ..] => TuiSubmit::Command(TuiCommand::Error(
+            "Usage: /compact\nSummarizes the current conversation context into a compact form. Files are never changed."
+                .to_string(),
+        )),
         ["/resume"] => TuiSubmit::Command(TuiCommand::ResumePicker),
         ["/resume", target] => TuiSubmit::Command(TuiCommand::Resume {
             target: Some((*target).to_string()),

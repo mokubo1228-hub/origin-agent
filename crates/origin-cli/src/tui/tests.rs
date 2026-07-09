@@ -7,13 +7,17 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use origin_protocol::chat::{ChatRequest, ChatResponse};
+use origin_protocol::model::ModelInfo;
 use origin_protocol::provider::{ProviderAuth, ProviderId, ProviderKind};
 use origin_protocol::session::SessionEvent;
 use origin_provider::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
+use origin_provider::{ModelProvider, ProviderResult};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
+use std::cell::RefCell;
 
 use super::style::{rail_color, PanelTone, RAIL};
 use super::test_pending_apply_fixture;
@@ -60,6 +64,10 @@ use super::{
     WORKSPACE_OVERVIEW_MAX_ENTRIES,
 };
 use super::{
+    apply_compact_result, poll_tui_compact_worker, run_compact_with_session, TuiCompactInFlight,
+    TuiCompactWorkerResult, ACTIVE_CONTEXT_SUMMARY_MAX_CHARS,
+};
+use super::{
     apply_selected_resume_candidate_in, open_resume_picker_in, relative_time_label,
     resume_picker_lines, resume_picker_visible_lines, ResumePicker,
 };
@@ -67,6 +75,7 @@ use super::{
     collapse_pending_flows, has_blocking_agent_flow, is_any_overlay_open,
     is_any_provider_call_in_flight, is_permission_gate_active, ChatBackground,
 };
+use super::{context_tray_line, context_tray_tokens};
 use super::{TuiResumedSession, UserMemory};
 use crate::chat_workflow::{ChatFileContext, ChatWorkflowResult, WorkspaceInstructions};
 use crate::edit_workflow::{
@@ -131,6 +140,8 @@ fn test_state(input: &str) -> TuiState {
         result_panel: None,
         model_route_picker: None,
         resume_picker: None,
+        compact_in_flight: None,
+        next_compact_request_id: 0,
         interaction_mode: TuiInteractionMode::Ask,
         active_context: TuiActiveConversationContext::default(),
         pending_agent_existing_edit_plan: None,
@@ -170,6 +181,27 @@ fn set_agent_generation_in_flight(
     });
     state.agent_propose_in_flight = Some(TuiAgentProposeInFlight { receiver });
     sender
+}
+
+fn set_compact_in_flight(state: &mut TuiState) -> mpsc::Sender<TuiCompactWorkerResult> {
+    let (sender, receiver) = mpsc::channel();
+    let request_id = state.next_compact_request_id;
+    state.next_compact_request_id = state.next_compact_request_id.wrapping_add(1);
+    state.compact_in_flight = Some(TuiCompactInFlight {
+        request_id,
+        receiver,
+        baseline: state.active_context.entries.clone(),
+        started_at: Instant::now(),
+    });
+    sender
+}
+
+fn seed_active_context_entries(state: &mut TuiState, count: usize) {
+    for index in 0..count {
+        state
+            .active_context
+            .push_user(&format!("context message {index}"));
+    }
 }
 
 fn set_agent_plan_in_flight(state: &mut TuiState) -> mpsc::Sender<TuiAgentPlanWorkerResult> {
@@ -320,6 +352,7 @@ fn footer_for_state(state: &TuiState) -> &'static str {
         state.chat_in_flight.is_some(),
         state.model_route_picker.is_some(),
         state.resume_picker.is_some(),
+        state.compact_in_flight.is_some(),
         state.pending_agent_existing_edit_plan.is_some()
             || state.pending_agent_new_file_plan.is_some(),
         state.pending_agent_new_file_override,
@@ -1752,6 +1785,7 @@ fn footer_suggests_starter_commands_without_pending_proposal() {
         false,
         false,
         false,
+        false,
         TuiInteractionMode::Ask,
     );
 
@@ -1768,6 +1802,7 @@ fn footer_suggests_edit_loop_actions_with_pending_proposal() {
     let output = footer_text(
         "",
         true,
+        false,
         false,
         false,
         false,
@@ -1811,6 +1846,7 @@ fn footer_suggests_approval_decision_when_apply_is_pending() {
         false,
         false,
         false,
+        false,
         TuiInteractionMode::Ask,
     );
 
@@ -1834,6 +1870,7 @@ fn footer_suggests_waiting_state_when_chat_is_in_flight() {
         false,
         false,
         true,
+        false,
         false,
         false,
         false,
@@ -1894,6 +1931,7 @@ fn footer_hints_slash_commands_while_typing_slash() {
         false,
         false,
         false,
+        false,
         TuiInteractionMode::Ask,
     );
 
@@ -1910,6 +1948,7 @@ fn footer_hints_slash_commands_while_typing_slash() {
 fn footer_does_not_show_suggestion_controls_for_multiline_slash_input() {
     let output = footer_text(
         "/help\nmore",
+        false,
         false,
         false,
         false,
@@ -1949,6 +1988,7 @@ fn footer_shows_model_route_picker_controls_when_active() {
         false,
         false,
         false,
+        false,
         TuiInteractionMode::Ask,
     );
 
@@ -1959,6 +1999,7 @@ fn footer_shows_model_route_picker_controls_when_active() {
 fn footer_shows_agent_mode_safety_hint() {
     let output = footer_text(
         "",
+        false,
         false,
         false,
         false,
@@ -1984,6 +2025,7 @@ fn footer_shows_agent_mode_safety_hint() {
 fn footer_shows_agent_plan_numbered_actions() {
     let output = footer_text(
         "",
+        false,
         false,
         false,
         false,
@@ -5752,6 +5794,7 @@ fn resume_picker_open_with_injected_candidates_shows_seven_rows() {
         false,
         false,
         false,
+        false,
         TuiInteractionMode::Ask,
     );
     assert_eq!(footer, "Up/Down select · Enter resume · Esc cancel");
@@ -6093,6 +6136,283 @@ fn resume_picker_refused_while_apply_approval_pending() {
         message,
         TuiMessage::Error(text) if text.contains("Resume picker is unavailable")
     )));
+}
+
+/// context tray テスト用の loaded workspace instructions。
+fn tray_loaded_instructions() -> WorkspaceInstructions {
+    WorkspaceInstructions::Loaded {
+        path: "ORIGIN.md".to_string(),
+        bytes: 28,
+        sha256: "abc".to_string(),
+        body: "Prefer docs/ for summaries.".to_string(),
+    }
+}
+
+/// context tray テスト用の loaded user memory。
+fn tray_loaded_user_memory() -> UserMemory {
+    UserMemory::Loaded {
+        path: "memory.md".to_string(),
+        bytes: 24,
+        sha256: "def".to_string(),
+        body: "Prefers concise answers.".to_string(),
+    }
+}
+
+/// 全持続文脈が立った tray テスト用 state(instructions + memory + resumed + history 2件)。
+fn tray_full_state() -> TuiState {
+    let mut state = test_state("");
+    state.workspace_instructions = tray_loaded_instructions();
+    state.user_memory = tray_loaded_user_memory();
+    state.resumed_session = Some(TuiResumedSession {
+        session_id: "20260101-000000-abc123".to_string(),
+        source_path: "/tmp/sessions/20260101-000000-abc123.jsonl".to_string(),
+        context: "Previous session context Authorization: Bearer topsecret".to_string(),
+    });
+    state.active_context.push_user("hello");
+    state.active_context.push_assistant("hi");
+    state
+}
+
+fn tray_line_text(state: &TuiState, width: u16) -> Option<String> {
+    context_tray_line(state, width).map(|line| line.to_string())
+}
+
+#[test]
+fn context_tray_shows_origin_md_when_loaded() {
+    let loaded = context_tray_tokens(&tray_loaded_instructions(), &UserMemory::None, None, 0);
+    assert_eq!(loaded, vec!["ORIGIN.md".to_string()]);
+
+    // skipped は注入されないので tray にも出さない(表示条件 = 注入条件)。
+    let skipped = WorkspaceInstructions::Skipped {
+        path: "ORIGIN.md".to_string(),
+        bytes: None,
+        sha256: None,
+        reason: "symlink".to_string(),
+    };
+    assert!(context_tray_tokens(&skipped, &UserMemory::None, None, 0).is_empty());
+    assert!(
+        context_tray_tokens(&WorkspaceInstructions::None, &UserMemory::None, None, 0).is_empty()
+    );
+}
+
+#[test]
+fn context_tray_shows_user_memory_when_loaded() {
+    let tokens = context_tray_tokens(
+        &WorkspaceInstructions::None,
+        &tray_loaded_user_memory(),
+        None,
+        0,
+    );
+    assert_eq!(tokens, vec!["memory".to_string()]);
+}
+
+#[test]
+fn context_tray_shows_resumed_session_presence_without_id() {
+    let mut state = test_state("");
+    state.resumed_session = Some(TuiResumedSession {
+        session_id: "20260101-000000-abc123".to_string(),
+        source_path: "/tmp/sessions/20260101-000000-abc123.jsonl".to_string(),
+        context: "Previous session context Authorization: Bearer topsecret".to_string(),
+    });
+
+    let line = tray_line_text(&state, 80).expect("tray should render");
+
+    assert!(line.contains("resumed"));
+    // session id・path・本文・secret は tray に出ない(固定語 + 数値のみ)。
+    assert!(!line.contains("20260101-000000-abc123"));
+    assert!(!line.contains("/tmp/sessions"));
+    assert!(!line.contains(".jsonl"));
+    assert!(!line.contains("Bearer"));
+    assert!(!line.contains("topsecret"));
+    assert!(!line.contains("Previous session context"));
+}
+
+#[test]
+fn context_tray_shows_history_count() {
+    let mut state = test_state("");
+    state.active_context.push_user("one");
+    state.active_context.push_assistant("two");
+    state.active_context.push_user("three");
+
+    let line = tray_line_text(&state, 80).expect("tray should render");
+    assert!(line.contains("history 3"));
+
+    let empty = test_state("");
+    assert!(tray_line_text(&empty, 80).is_none());
+}
+
+#[test]
+fn context_tray_hidden_when_all_sources_empty() {
+    let state = test_state("");
+
+    assert!(context_tray_line(&state, 80).is_none());
+    // tray 不在時の高さは従来と同じで、持続文脈が立つと +1 される。
+    let baseline = interaction_pane_height(&state);
+    let mut full = tray_full_state();
+    assert_eq!(interaction_pane_height(&full), baseline + 1);
+    // gate 中は tray が消えるぶん高さも戻る(表示と高さが同じ helper を使う)。
+    full.pending_proposal = Some(test_pending_proposal());
+    full.proposal_review = Some(TuiProposalReview {
+        mode: TuiProposalReviewMode::Review,
+        origin: TuiProposalReviewOrigin::Manual,
+        apply_status: TuiProposalApplyStatus::Available,
+        selected_action: 0,
+    });
+    let review_height = review_panel_lines(&full, 80).len() as u16;
+    assert_eq!(
+        interaction_pane_height(&full),
+        baseline + review_height,
+        "gate 中は tray の +1 が消える"
+    );
+}
+
+#[test]
+fn context_tray_hidden_during_permission_gate() {
+    // proposal review(y/n permission panel)中は、データ源が揃っていても出さない。
+    let mut review_state = tray_full_state();
+    assert!(context_tray_line(&review_state, 80).is_some());
+    review_state.pending_proposal = Some(test_pending_proposal());
+    review_state.proposal_review = Some(TuiProposalReview {
+        mode: TuiProposalReviewMode::Review,
+        origin: TuiProposalReviewOrigin::Manual,
+        apply_status: TuiProposalApplyStatus::Available,
+        selected_action: 0,
+    });
+    assert!(context_tray_line(&review_state, 80).is_none());
+
+    // pending apply(y/n 承認プロンプト)中も出さない(FD-5 fixture で構築)。
+    let root = temp_dir("context-tray-apply-pending");
+    fs::create_dir_all(&root).unwrap();
+    let session = SessionWriter::create_in(
+        root.join("sessions"),
+        root.clone(),
+        "apply",
+        UNIX_EPOCH + Duration::from_secs(1_777_944_225),
+    )
+    .unwrap();
+    let mut apply_state = tray_full_state();
+    apply_state.pending_apply = Some(test_pending_apply_fixture(session, test_pending_proposal()));
+    assert!(context_tray_line(&apply_state, 80).is_none());
+}
+
+#[test]
+fn context_tray_line_fits_narrow_width() {
+    let state = tray_full_state();
+
+    let line = tray_line_text(&state, 20).expect("tray should render");
+
+    assert!(line.chars().count() <= 20);
+    assert!(line.ends_with("..."));
+    assert!(!line.contains('\n'));
+}
+
+#[test]
+fn context_tray_does_not_mutate_state() {
+    let state = tray_full_state();
+    let messages_before = state.messages.clone();
+    let entries_before = state.active_context.entries.clone();
+
+    let first = tray_line_text(&state, 80);
+    let second = tray_line_text(&state, 80);
+
+    assert_eq!(first, second);
+    assert_eq!(state.messages, messages_before);
+    assert_eq!(state.active_context.entries, entries_before);
+    assert!(state.resumed_session.is_some());
+    assert!(state.pending_proposal.is_none());
+}
+
+#[test]
+fn context_tray_order_matches_status_context_section() {
+    let mut state = tray_full_state();
+    refresh_status(&mut state);
+
+    // tray 側の順序(固定語で抽出)。
+    let tokens = context_tray_tokens(
+        &state.workspace_instructions,
+        &state.user_memory,
+        state.resumed_session.as_ref(),
+        state.active_context.entries.len(),
+    );
+    let tray_order: Vec<&str> = tokens
+        .iter()
+        .filter_map(|token| match token.as_str() {
+            "ORIGIN.md" => Some("instructions"),
+            "memory" => Some("memory"),
+            "resumed" => Some("resumed"),
+            _ => None,
+        })
+        .collect();
+
+    // /status Context 節の行順を出現位置から抽出し、両者を突き合わせる(順序を定数化しない)。
+    let status = format_tui_status(&state.status);
+    let mut status_order: Vec<(usize, &str)> = vec![
+        (
+            status
+                .find("workspace instructions:")
+                .expect("status should show instructions"),
+            "instructions",
+        ),
+        (
+            status.find("memory:").expect("status should show memory"),
+            "memory",
+        ),
+        (
+            status
+                .find("resumed session:")
+                .expect("status should show resumed"),
+            "resumed",
+        ),
+    ];
+    status_order.sort_by_key(|(position, _)| *position);
+    let status_order: Vec<&str> = status_order.into_iter().map(|(_, label)| label).collect();
+
+    assert_eq!(tray_order, status_order);
+}
+
+#[test]
+fn clearing_resumed_updates_tray_but_not_memory_tokens() {
+    let mut state = tray_full_state();
+    let before = tray_line_text(&state, 80).expect("tray should render");
+    assert!(before.contains("resumed"));
+    assert!(before.contains("history"));
+
+    handle_tui_command(&mut state, TuiCommand::Clear);
+
+    let after = tray_line_text(&state, 80).expect("tray should still render");
+    assert!(after.contains("ORIGIN.md"));
+    assert!(after.contains("memory"));
+    // /clear は resumed background と会話履歴(active context)の両方を破棄する(既存仕様)。
+    assert!(!after.contains("resumed"));
+    assert!(!after.contains("history"));
+}
+
+#[test]
+fn context_tray_contains_no_write_vocabulary() {
+    let state = tray_full_state();
+    let line = tray_line_text(&state, 120).expect("tray should render");
+
+    // tray は read-only の presence 表示であり、write/approval の語彙・番号メニューを含まない。
+    for forbidden in ["Update", "Create", "y/n", "apply", "1.", "2.", "3."] {
+        assert!(
+            !line.contains(forbidden),
+            "tray must not contain {forbidden:?}: {line}"
+        );
+    }
+    assert!(line.starts_with("  context: "));
+}
+
+#[test]
+fn context_tray_shifts_composer_cursor_by_one_line() {
+    let area = Rect::new(0, 0, 80, 12);
+    let empty = test_state("");
+    let baseline = composer_cursor_position(&empty, area);
+
+    let full = tray_full_state();
+    let shifted = composer_cursor_position(&full, area);
+
+    assert_eq!(shifted.y, baseline.y + 1);
+    assert_eq!(shifted.x, baseline.x);
 }
 
 #[test]
@@ -7254,4 +7574,334 @@ fn formats_recent_sessions_without_secret_terms() {
     assert!(!output.contains("Authorization"));
     assert!(!output.contains("Bearer"));
     assert!(!output.contains("OPENAI_API_KEY"));
+}
+
+// ---- CP1 /compact -------------------------------------------------------
+
+struct CompactFakeProvider {
+    id: ProviderId,
+    response: String,
+    requests: RefCell<Vec<ChatRequest>>,
+}
+
+impl ModelProvider for CompactFakeProvider {
+    fn id(&self) -> &ProviderId {
+        &self.id
+    }
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::OpenAiCompatible
+    }
+    fn base_url(&self) -> &str {
+        "http://localhost:1234/v1"
+    }
+    fn list_models(&self) -> ProviderResult<Vec<ModelInfo>> {
+        Ok(Vec::new())
+    }
+    fn complete_chat(&self, request: ChatRequest) -> ProviderResult<ChatResponse> {
+        self.requests.borrow_mut().push(request);
+        Ok(ChatResponse {
+            content: self.response.clone(),
+        })
+    }
+}
+
+#[test]
+fn compact_command_parses_and_rejects_args() {
+    let mut compact = test_state("/compact");
+    assert_eq!(
+        prepare_tui_submit(&mut compact),
+        Some(TuiSubmit::Command(TuiCommand::Compact))
+    );
+
+    let mut with_args = test_state("/compact now");
+    assert!(matches!(
+        prepare_tui_submit(&mut with_args),
+        Some(TuiSubmit::Command(TuiCommand::Error(text)))
+            if text.contains("Usage: /compact")
+    ));
+}
+
+#[test]
+fn compact_refused_while_busy_or_pending() {
+    // chat が in-flight の間は開始しない。
+    let mut chat_state = test_state("");
+    seed_active_context_entries(&mut chat_state, 6);
+    let entries_before = chat_state.active_context.entries.clone();
+    let (_sender, receiver) = mpsc::channel();
+    chat_state.chat_in_flight = Some(TuiChatInFlight {
+        receiver,
+        warning_shown: false,
+        started_at: Instant::now(),
+    });
+    handle_tui_command(&mut chat_state, TuiCommand::Compact);
+    assert!(chat_state.compact_in_flight.is_none());
+    assert_eq!(chat_state.active_context.entries, entries_before);
+    assert!(chat_state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Error(text) if text.contains("Compact is unavailable")
+    )));
+
+    // write permission gate(proposal review)中も開始しない。
+    let mut review_state = test_state("");
+    seed_active_context_entries(&mut review_state, 6);
+    review_state.pending_proposal = Some(test_pending_proposal());
+    review_state.proposal_review = Some(TuiProposalReview {
+        mode: TuiProposalReviewMode::Review,
+        origin: TuiProposalReviewOrigin::Manual,
+        apply_status: TuiProposalApplyStatus::Available,
+        selected_action: 0,
+    });
+    handle_tui_command(&mut review_state, TuiCommand::Compact);
+    assert!(review_state.compact_in_flight.is_none());
+    assert!(review_state.proposal_review.is_some());
+
+    // overlay(resume picker)中も開始しない。
+    let mut picker_state = test_state("");
+    seed_active_context_entries(&mut picker_state, 6);
+    seed_resume_picker(&mut picker_state, 3);
+    handle_tui_command(&mut picker_state, TuiCommand::Compact);
+    assert!(picker_state.compact_in_flight.is_none());
+    assert!(picker_state.resume_picker.is_some());
+
+    // compact 自身が in-flight の間の再実行も拒否する。
+    let mut running_state = test_state("");
+    seed_active_context_entries(&mut running_state, 6);
+    let _sender = set_compact_in_flight(&mut running_state);
+    let request_id_before = running_state.next_compact_request_id;
+    handle_tui_command(&mut running_state, TuiCommand::Compact);
+    assert_eq!(running_state.next_compact_request_id, request_id_before);
+}
+
+#[test]
+fn compact_refused_when_context_empty_or_tiny() {
+    let mut empty_state = test_state("");
+    handle_tui_command(&mut empty_state, TuiCommand::Compact);
+    assert!(empty_state.compact_in_flight.is_none());
+    assert!(empty_state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text) if text.contains("Nothing to compact")
+    )));
+
+    let mut tiny_state = test_state("");
+    seed_active_context_entries(&mut tiny_state, 3);
+    handle_tui_command(&mut tiny_state, TuiCommand::Compact);
+    assert!(tiny_state.compact_in_flight.is_none());
+    assert!(tiny_state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text) if text.contains("already small (3 items)")
+    )));
+    assert_eq!(tiny_state.active_context.entries.len(), 3);
+}
+
+#[test]
+fn apply_compact_result_replaces_entries_with_summary_plus_recent() {
+    let mut state = test_state("");
+    seed_active_context_entries(&mut state, 8);
+    let baseline = state.active_context.entries.clone();
+
+    apply_compact_result(
+        &mut state,
+        baseline,
+        Ok("task summary: still polishing README".to_string()),
+    );
+
+    let entries = &state.active_context.entries;
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].role, "summary");
+    assert!(entries[0].text.contains("task summary"));
+    assert!(entries[1].text.contains("context message 6"));
+    assert!(entries[2].text.contains("context message 7"));
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text)
+            if text.contains("Context compacted: 8 items") && text.contains("summary + 2 recent")
+    )));
+}
+
+#[test]
+fn apply_compact_result_keeps_entries_pushed_during_compaction() {
+    let mut state = test_state("");
+    seed_active_context_entries(&mut state, 6);
+    let baseline = state.active_context.entries.clone();
+    // 圧縮中に積まれた想定の entry(/mode 切替 notice 等)。
+    state.active_context.push("tui", "Mode switched to AGENT.");
+
+    apply_compact_result(&mut state, baseline, Ok("summary".to_string()));
+
+    let entries = &state.active_context.entries;
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0].role, "summary");
+    assert!(entries[3].text.contains("Mode switched to AGENT"));
+}
+
+#[test]
+fn compact_summary_is_redacted_and_bounded() {
+    let mut state = test_state("");
+    seed_active_context_entries(&mut state, 6);
+    let baseline = state.active_context.entries.clone();
+    let long_secret_summary = format!(
+        "Authorization: Bearer top-secret-token {}",
+        "x".repeat(2_000)
+    );
+
+    apply_compact_result(&mut state, baseline, Ok(long_secret_summary));
+
+    let summary = &state.active_context.entries[0];
+    assert_eq!(summary.role, "summary");
+    assert!(!summary.text.contains("top-secret-token"));
+    assert!(!summary.text.contains("Bearer"));
+    assert!(summary.text.chars().count() <= ACTIVE_CONTEXT_SUMMARY_MAX_CHARS + 3);
+}
+
+#[test]
+fn compact_failure_and_empty_response_leave_context_unchanged() {
+    let mut state = test_state("");
+    seed_active_context_entries(&mut state, 5);
+    let entries_before = state.active_context.entries.clone();
+
+    apply_compact_result(
+        &mut state,
+        entries_before.clone(),
+        Err("provider timeout".to_string()),
+    );
+    assert_eq!(state.active_context.entries, entries_before);
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Error(text)
+            if text.contains("Compact failed") && text.contains("unchanged")
+    )));
+
+    apply_compact_result(&mut state, entries_before.clone(), Ok("   ".to_string()));
+    assert_eq!(state.active_context.entries, entries_before);
+}
+
+#[test]
+fn compact_interrupt_leaves_context_unchanged() {
+    let mut state = test_state("");
+    seed_active_context_entries(&mut state, 6);
+    let entries_before = state.active_context.entries.clone();
+    let _sender = set_compact_in_flight(&mut state);
+
+    let handled = handle_running_interrupt_key(&mut state, KeyCode::Esc, KeyModifiers::empty());
+
+    assert!(handled);
+    assert!(state.compact_in_flight.is_none());
+    assert_eq!(state.active_context.entries, entries_before);
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text)
+            if text.contains("Interrupted") && text.contains("context is unchanged")
+    )));
+}
+
+#[test]
+fn compact_late_result_is_discarded() {
+    let mut state = test_state("");
+    seed_active_context_entries(&mut state, 6);
+    let entries_before = state.active_context.entries.clone();
+    let sender = set_compact_in_flight(&mut state);
+    let stale_request_id = state.next_compact_request_id.wrapping_add(10);
+
+    sender
+        .send(TuiCompactWorkerResult {
+            request_id: stale_request_id,
+            runtime: test_runtime(),
+            result: Ok("stale summary".to_string()),
+        })
+        .expect("send should succeed");
+    poll_tui_compact_worker(&mut state);
+
+    assert_eq!(state.active_context.entries, entries_before);
+    assert!(!state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text) if text.contains("Context compacted")
+    )));
+}
+
+#[test]
+fn summary_role_renders_in_provider_context() {
+    let mut state = test_state("");
+    state.active_context.push_summary("earlier work summary");
+    let context = state
+        .active_context
+        .provider_context()
+        .expect("summary should render");
+    assert!(context.contains("summary: earlier work summary"));
+}
+
+#[test]
+fn compact_running_panel_shows_compacting_state() {
+    let mut state = test_state("");
+    seed_active_context_entries(&mut state, 6);
+    let _sender = set_compact_in_flight(&mut state);
+
+    let panel = review_panel_lines(&state, 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(panel.contains("Compacting conversation"));
+    assert!(panel.contains("Compacting"));
+    assert!(panel.contains("Waiting for provider"));
+    assert!(panel.contains("No files will be changed."));
+    assert!(panel.contains("Esc/Ctrl+C to interrupt"));
+    assert_eq!(
+        footer_for_state(&state),
+        "Compacting · Esc/Ctrl+C to interrupt"
+    );
+}
+
+#[test]
+fn compact_transcript_records_marker_not_context_body() {
+    let provider = CompactFakeProvider {
+        id: ProviderId::new("lmstudio"),
+        response: "bounded summary".to_string(),
+        requests: RefCell::new(Vec::new()),
+    };
+    let root =
+        std::env::temp_dir().join(format!("origin-compact-transcript-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let mut session = SessionWriter::create_in(
+        root.clone(),
+        PathBuf::from("/tmp/work"),
+        "compact",
+        UNIX_EPOCH,
+    )
+    .expect("session should be created");
+    let path = session.path().to_path_buf();
+
+    let summary = run_compact_with_session(
+        &provider,
+        "qwen-test",
+        "user: secret-context-body should not persist",
+        &mut session,
+    )
+    .expect("compact should succeed");
+    drop(session);
+
+    assert_eq!(summary, "bounded summary");
+    // provider には context 全文が渡る(要約対象なので当然)。
+    let requests = provider.requests.borrow();
+    assert!(requests[0].messages[0]
+        .content
+        .contains("secret-context-body"));
+    assert_eq!(requests[0].max_tokens, Some(400));
+
+    // transcript は固定マーカーのみで、context 本文を重複保存しない。
+    let transcript = fs::read_to_string(&path).expect("transcript should be readable");
+    assert!(transcript.contains("(compact request over"));
+    assert!(!transcript.contains("secret-context-body"));
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn clear_still_clears_summary_entries() {
+    let mut state = test_state("");
+    state.active_context.push_summary("earlier work summary");
+    seed_active_context_entries(&mut state, 2);
+
+    handle_tui_command(&mut state, TuiCommand::Clear);
+
+    assert!(state.active_context.provider_context().is_none());
 }

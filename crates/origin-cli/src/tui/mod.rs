@@ -147,6 +147,8 @@ pub(crate) fn run() -> Result<(), String> {
         result_panel: None,
         model_route_picker: None,
         resume_picker: None,
+        compact_in_flight: None,
+        next_compact_request_id: 0,
         interaction_mode: TuiInteractionMode::Ask,
         active_context: TuiActiveConversationContext::default(),
         pending_agent_existing_edit_plan: None,
@@ -170,6 +172,7 @@ pub(crate) fn run() -> Result<(), String> {
         poll_tui_agent_plan_worker(&mut state);
         poll_tui_agent_propose_worker(&mut state);
         poll_tui_chat_worker(&mut state);
+        poll_tui_compact_worker(&mut state);
         terminal
             .draw(|frame| render(frame, &state))
             .map_err(|error| format!("Could not draw TUI frame: {error}"))?;

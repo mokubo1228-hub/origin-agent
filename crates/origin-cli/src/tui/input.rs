@@ -754,6 +754,11 @@ pub(super) fn handle_running_interrupt_key(
         interrupt_agent_generation(state);
         return true;
     }
+    // /compact は常に中断可能(context 無傷で worker を捨てるだけ)。
+    if (is_ctrl_c || is_esc) && state.compact_in_flight.is_some() {
+        interrupt_compact(state);
+        return true;
+    }
     false
 }
 
