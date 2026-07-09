@@ -72,6 +72,7 @@ use super::{
     apply_selected_resume_candidate_in, open_resume_picker_in, relative_time_label,
     resume_picker_lines, resume_picker_visible_lines, ResumePicker,
 };
+use super::{chat_background_from_state, run_memory_action_in, TuiMemoryAction};
 use super::{
     collapse_pending_flows, has_blocking_agent_flow, is_any_overlay_open,
     is_any_provider_call_in_flight, is_permission_gate_active, ChatBackground,
@@ -156,6 +157,7 @@ fn test_state(input: &str) -> TuiState {
         selection_buffer: String::new(),
         workspace_instructions,
         user_memory: UserMemory::None,
+        agent_memory: origin_session::memory::MemorySnapshot::default(),
         resumed_session: None,
     }
 }
@@ -716,6 +718,8 @@ fn agent_planner_background_bundles_instructions_memory_and_resume() {
         workspace_instructions: instructions,
         user_memory: memory,
         resumed_session: Some(resumed),
+        agent_memory: None,
+        policy_restricted: false,
     })
     .expect("background should be built");
 
@@ -6218,7 +6222,13 @@ fn tray_line_text(state: &TuiState, width: u16) -> Option<String> {
 
 #[test]
 fn context_tray_shows_origin_md_when_loaded() {
-    let loaded = context_tray_tokens(&tray_loaded_instructions(), &UserMemory::None, None, 0);
+    let loaded = context_tray_tokens(
+        &tray_loaded_instructions(),
+        &UserMemory::None,
+        &origin_session::memory::MemorySnapshot::default(),
+        None,
+        0,
+    );
     assert_eq!(loaded, vec!["ORIGIN.md".to_string()]);
 
     // skipped は注入されないので tray にも出さない(表示条件 = 注入条件)。
@@ -6228,10 +6238,22 @@ fn context_tray_shows_origin_md_when_loaded() {
         sha256: None,
         reason: "symlink".to_string(),
     };
-    assert!(context_tray_tokens(&skipped, &UserMemory::None, None, 0).is_empty());
-    assert!(
-        context_tray_tokens(&WorkspaceInstructions::None, &UserMemory::None, None, 0).is_empty()
-    );
+    assert!(context_tray_tokens(
+        &skipped,
+        &UserMemory::None,
+        &origin_session::memory::MemorySnapshot::default(),
+        None,
+        0
+    )
+    .is_empty());
+    assert!(context_tray_tokens(
+        &WorkspaceInstructions::None,
+        &UserMemory::None,
+        &origin_session::memory::MemorySnapshot::default(),
+        None,
+        0
+    )
+    .is_empty());
 }
 
 #[test]
@@ -6239,6 +6261,7 @@ fn context_tray_shows_user_memory_when_loaded() {
     let tokens = context_tray_tokens(
         &WorkspaceInstructions::None,
         &tray_loaded_user_memory(),
+        &origin_session::memory::MemorySnapshot::default(),
         None,
         0,
     );
@@ -6370,6 +6393,7 @@ fn context_tray_order_matches_status_context_section() {
     let tokens = context_tray_tokens(
         &state.workspace_instructions,
         &state.user_memory,
+        &state.agent_memory,
         state.resumed_session.as_ref(),
         state.active_context.entries.len(),
     );
@@ -7965,6 +7989,7 @@ fn test_policy(read: &[&str], write: &[&str]) -> origin_tools::policy::PolicySet
             .collect(),
         workspace_rules: read.len() + write.len(),
         user_rules: 0,
+        memory_never_store: Vec::new(),
         warnings: Vec::new(),
     }
 }
@@ -8098,4 +8123,155 @@ fn read_deny_applies_to_symlink_resolved_paths() {
                 .as_deref()
                 .is_some_and(|reason| reason.contains("denied by workspace policy"))
     }));
+}
+
+// ---- N1 agent memory --------------------------------------------------------
+
+#[test]
+fn memory_command_parses_subcommands() {
+    let cases = [
+        ("/memory", TuiMemoryAction::Status),
+        ("/memory enable", TuiMemoryAction::Enable),
+        ("/memory disable", TuiMemoryAction::Disable),
+        ("/memory undo", TuiMemoryAction::Undo),
+        (
+            "/memory remember 回答は簡潔に",
+            TuiMemoryAction::Remember("回答は簡潔に".to_string()),
+        ),
+        (
+            "/memory forget a1b2c3d4",
+            TuiMemoryAction::Forget("a1b2c3d4".to_string()),
+        ),
+    ];
+    for (input, expected) in cases {
+        let mut state = test_state(input);
+        assert_eq!(
+            prepare_tui_submit(&mut state),
+            Some(TuiSubmit::Command(TuiCommand::Memory(expected.clone()))),
+            "{input}"
+        );
+    }
+
+    let mut bad = test_state("/memory frget x");
+    assert!(matches!(
+        prepare_tui_submit(&mut bad),
+        Some(TuiSubmit::Command(TuiCommand::Error(text)))
+            if text.contains("Usage: /memory")
+    ));
+}
+
+#[test]
+fn memory_enable_remember_updates_status_injection_and_tray() {
+    let dir = temp_dir("tui-memory-flow");
+    let mut state = test_state("");
+
+    // 既定 off: 注入も tray token も無い。
+    assert!(chat_background_from_state(&state).agent_memory.is_none());
+
+    run_memory_action_in(&mut state, &dir, TuiMemoryAction::Enable);
+    run_memory_action_in(
+        &mut state,
+        &dir,
+        TuiMemoryAction::Remember("回答は簡潔に".to_string()),
+    );
+
+    assert!(state.agent_memory.enabled);
+    assert_eq!(state.agent_memory.entries.len(), 1);
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text) if text.contains("memory saved: [")
+    )));
+    assert!(format_tui_status(&state.status).contains("agent memory:           on — 1 note"));
+
+    let background = chat_background_from_state(&state);
+    let agent_memory = background.agent_memory.expect("should inject");
+    assert!(agent_memory.body.contains("- 回答は簡潔に"));
+
+    let tokens = context_tray_tokens(
+        &state.workspace_instructions,
+        &state.user_memory,
+        &state.agent_memory,
+        None,
+        0,
+    );
+    assert_eq!(tokens, vec!["notes 1".to_string()]);
+}
+
+#[test]
+fn memory_forget_undo_and_refusal_notices() {
+    let dir = temp_dir("tui-memory-notices");
+    let mut state = test_state("");
+    run_memory_action_in(&mut state, &dir, TuiMemoryAction::Enable);
+    run_memory_action_in(
+        &mut state,
+        &dir,
+        TuiMemoryAction::Remember("first note".to_string()),
+    );
+    let id = state.agent_memory.entries[0].id.clone();
+
+    run_memory_action_in(&mut state, &dir, TuiMemoryAction::Forget(id.clone()));
+    assert!(state.agent_memory.entries.is_empty());
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text) if text.contains(&format!("memory forgotten: [{id}]"))
+    )));
+
+    run_memory_action_in(
+        &mut state,
+        &dir,
+        TuiMemoryAction::Remember("api_key is abc".to_string()),
+    );
+    assert!(state.agent_memory.entries.is_empty());
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text) if text.contains("looks sensitive")
+    )));
+
+    run_memory_action_in(
+        &mut state,
+        &dir,
+        TuiMemoryAction::Remember("second note".to_string()),
+    );
+    run_memory_action_in(&mut state, &dir, TuiMemoryAction::Undo);
+    assert!(state.agent_memory.entries.is_empty());
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text) if text.contains("memory undone: [")
+    )));
+}
+
+#[test]
+fn memory_disable_stops_injection_but_keeps_notes() {
+    let dir = temp_dir("tui-memory-disable");
+    let mut state = test_state("");
+    run_memory_action_in(&mut state, &dir, TuiMemoryAction::Enable);
+    run_memory_action_in(
+        &mut state,
+        &dir,
+        TuiMemoryAction::Remember("kept note".to_string()),
+    );
+    run_memory_action_in(&mut state, &dir, TuiMemoryAction::Disable);
+
+    assert!(!state.agent_memory.enabled);
+    assert_eq!(state.agent_memory.entries.len(), 1);
+    assert!(chat_background_from_state(&state).agent_memory.is_none());
+    assert!(format_tui_status(&state.status).contains("agent memory:           off"));
+}
+
+#[test]
+fn policy_never_store_patterns_reach_memory_refusal() {
+    let dir = temp_dir("tui-memory-policy");
+    let mut state = test_state("");
+    state.runtime.policy.memory_never_store = vec!["社外秘".to_string()];
+    run_memory_action_in(&mut state, &dir, TuiMemoryAction::Enable);
+    run_memory_action_in(
+        &mut state,
+        &dir,
+        TuiMemoryAction::Remember("これは社外秘です".to_string()),
+    );
+    assert!(state.agent_memory.entries.is_empty());
+    assert!(state.messages.iter().any(|message| matches!(
+        message,
+        TuiMessage::Action(text) if text.contains("looks sensitive")
+    )));
 }

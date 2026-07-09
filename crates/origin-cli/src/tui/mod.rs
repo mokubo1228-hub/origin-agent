@@ -116,6 +116,9 @@ pub(crate) fn run() -> Result<(), String> {
     let runtime = RuntimeState::initialize_interactive()?;
     let workspace_instructions = WorkspaceInstructions::load_from_cwd(&runtime.cwd);
     let user_memory = UserMemory::load_default();
+    let agent_memory = origin_session::memory::default_memory_dir()
+        .map(|dir| origin_session::memory::load_snapshot(&dir))
+        .unwrap_or_default();
     let status = StatusSnapshot::from_tui_context(
         &runtime,
         PendingProposalSnapshot::none(),
@@ -123,6 +126,8 @@ pub(crate) fn run() -> Result<(), String> {
         &user_memory,
         TuiInteractionMode::Ask.label(),
         None,
+        agent_memory.enabled,
+        agent_memory.entries.len(),
     );
     // 初期状態:Ask mode で開始し、pending な提案/承認/Agent plan は全て無し、worker も未起動。
     // 以降はこの単一の TuiState を run loop と全 handler が &mut で共有する。
@@ -130,6 +135,7 @@ pub(crate) fn run() -> Result<(), String> {
         messages: Vec::new(),
         status,
         runtime,
+        agent_memory,
         input: String::new(),
         input_cursor: 0,
         suggestion_selection: 0,

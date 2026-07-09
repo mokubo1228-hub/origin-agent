@@ -86,6 +86,7 @@ pub(super) fn handle_tui_command(state: &mut TuiState, command: TuiCommand) {
         },
         TuiCommand::ResumePicker => open_resume_picker(state),
         TuiCommand::Compact => start_tui_compact(state),
+        TuiCommand::Memory(action) => run_memory_action(state, action),
         TuiCommand::Resume { target } => run_tui_resume(state, target),
         TuiCommand::Propose { path, instruction } => run_tui_propose(state, path, instruction),
         TuiCommand::AgentPropose { path, instruction } => start_tui_agent_propose(
@@ -201,7 +202,99 @@ pub(super) fn refresh_status(state: &mut TuiState) {
             .resumed_session
             .as_ref()
             .map(|resumed| resumed.session_id.clone()),
+        state.agent_memory.enabled,
+        state.agent_memory.entries.len(),
     );
+}
+
+/// /memory(N1)。書き込みは全部この明示コマンド経由(M-2)。store は user home 固定。
+pub(super) fn run_memory_action(state: &mut TuiState, action: TuiMemoryAction) {
+    let Some(dir) = origin_session::memory::default_memory_dir() else {
+        state.messages.push(TuiMessage::Error(
+            "Could not resolve ~/.origin/memory.".to_string(),
+        ));
+        return;
+    };
+    run_memory_action_in(state, &dir, action);
+}
+
+pub(super) fn run_memory_action_in(state: &mut TuiState, dir: &Path, action: TuiMemoryAction) {
+    use origin_session::memory as agent_memory;
+    let notice = match &action {
+        TuiMemoryAction::Status => {
+            let snapshot = agent_memory::load_snapshot(dir);
+            let mut lines = vec![format!(
+                "Agent memory: {}",
+                if snapshot.enabled { "on" } else { "off — /memory enable to turn on" }
+            )];
+            if snapshot.enabled {
+                if snapshot.entries.is_empty() {
+                    lines.push("No notes yet. /memory remember <text> adds one.".to_string());
+                } else {
+                    for entry in &snapshot.entries {
+                        lines.push(format!("  [{}] {}", entry.id, entry.text));
+                    }
+                    lines.push(format!(
+                        "{} chars of {} used. Stored in ~/.origin/memory/preferences.md.",
+                        snapshot.chars_used,
+                        agent_memory::MEMORY_PREFERENCES_MAX_CHARS
+                    ));
+                }
+            }
+            state.agent_memory = snapshot;
+            Ok(lines.join("\n"))
+        }
+        TuiMemoryAction::Enable => agent_memory::set_enabled(dir, true).map(|_| {
+            "Agent memory is on. origin writes only what you ask it to remember, only to ~/.origin/memory/. /memory disable turns it off.".to_string()
+        }),
+        TuiMemoryAction::Disable => agent_memory::set_enabled(dir, false).map(|_| {
+            "Agent memory is off. Stored notes are kept but no longer read or written.".to_string()
+        }),
+        TuiMemoryAction::Remember(text) => agent_memory::remember(
+            dir,
+            text,
+            &state.runtime.policy.memory_never_store,
+        )
+        .map(|outcome| match outcome {
+            agent_memory::MemoryWriteOutcome::Written { entry, unforgotten } => format!(
+                "memory saved: [{}] {}{}",
+                entry.id,
+                entry.text,
+                if unforgotten { " (previously forgotten — remembered again)" } else { "" }
+            ),
+            agent_memory::MemoryWriteOutcome::RefusedDisabled => {
+                "Agent memory is off. /memory enable to turn it on first.".to_string()
+            }
+            agent_memory::MemoryWriteOutcome::RefusedSensitive => {
+                "Not saved: that text looks sensitive (key, token, or a never-store pattern)."
+                    .to_string()
+            }
+            agent_memory::MemoryWriteOutcome::RefusedDuplicate => {
+                "Not saved: an identical note already exists.".to_string()
+            }
+            agent_memory::MemoryWriteOutcome::RefusedTooLong => format!(
+                "Not saved: notes are limited to {} characters.",
+                agent_memory::MEMORY_ENTRY_MAX_CHARS
+            ),
+            agent_memory::MemoryWriteOutcome::RefusedFull => {
+                "Not saved: memory is full. /memory forget <id> frees space.".to_string()
+            }
+        }),
+        TuiMemoryAction::Forget(id) => agent_memory::forget(dir, id)
+            .map(|entry| format!("memory forgotten: [{}] {}", entry.id, entry.text)),
+        TuiMemoryAction::Undo => agent_memory::undo(dir).map(|undone| match undone {
+            Some(entry) => format!("memory undone: [{}] {}", entry.id, entry.text),
+            None => "Nothing to undo.".to_string(),
+        }),
+    };
+    match notice {
+        Ok(text) => state.messages.push(TuiMessage::Action(text)),
+        Err(error) => state.messages.push(TuiMessage::Error(error)),
+    }
+    if !matches!(action, TuiMemoryAction::Status) {
+        state.agent_memory = agent_memory::load_snapshot(dir);
+    }
+    refresh_status(state);
 }
 
 /// chat worker の結果を main state に反映する終端。成功なら assistant 応答を、
@@ -230,9 +323,19 @@ pub(super) fn finish_chat_submit(state: &mut TuiState, result: Result<ChatWorkfl
 /// chat worker と Agent planner が同じ束を使う。TuiResumedSession → ChatResumedSession の
 /// 変換もここに集約する(新しい持続 source はこの関数と ChatBackground に足す)。
 pub(super) fn chat_background_from_state(state: &TuiState) -> ChatBackground {
+    let agent_memory = origin_session::memory::injection_body(&state.agent_memory).map(|body| {
+        crate::chat_workflow::ChatAgentMemory {
+            bytes: body.len() as u64,
+            sha256: origin_session::sha256_hex(body.as_bytes()),
+            body,
+        }
+    });
     ChatBackground {
         workspace_instructions: state.workspace_instructions.clone(),
         user_memory: state.user_memory.clone(),
+        agent_memory,
+        policy_restricted: state.runtime.policy.workspace_rules + state.runtime.policy.user_rules
+            > 0,
         resumed_session: state
             .resumed_session
             .as_ref()

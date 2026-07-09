@@ -266,6 +266,7 @@ pub(super) fn command_palette_line_count(state: &TuiState) -> u16 {
 pub(super) fn context_tray_tokens(
     workspace_instructions: &WorkspaceInstructions,
     user_memory: &UserMemory,
+    agent_memory: &origin_session::memory::MemorySnapshot,
     resumed: Option<&TuiResumedSession>,
     history_len: usize,
 ) -> Vec<String> {
@@ -276,6 +277,10 @@ pub(super) fn context_tray_tokens(
     }
     if user_memory.body().is_some() {
         tokens.push("memory".to_string());
+    }
+    // agent memory(N1)も注入条件と同じ時だけ出す(enabled かつ1件以上)。
+    if origin_session::memory::injection_body(agent_memory).is_some() {
+        tokens.push(format!("notes {}", agent_memory.entries.len()));
     }
     if resumed.is_some() {
         tokens.push("resumed".to_string());
@@ -298,6 +303,7 @@ pub(super) fn context_tray_line(state: &TuiState, width: u16) -> Option<Line<'st
     let tokens = context_tray_tokens(
         &state.workspace_instructions,
         &state.user_memory,
+        &state.agent_memory,
         state.resumed_session.as_ref(),
         state.active_context.entries.len(),
     );
@@ -1247,7 +1253,8 @@ pub(super) fn tui_help_text() -> String {
         "  /provider | /provider list  Show / list providers (diagnostics).",
         "  /provider set <provider-id> Switch provider (session-local).",
         "  /sessions                   Show recent saved sessions.
-  /compact                    Summarize the conversation context (files never change).",
+  /compact                    Summarize the conversation context (files never change).
+  /memory                     Show or edit notes origin remembers (enable/disable/remember/forget/undo).",
         "  /quit                       Quit the TUI.",
         "  Switching is session-local and never rewrites ~/.origin/config.toml.",
         "",
@@ -1450,7 +1457,7 @@ pub(super) fn format_tui_status(status: &StatusSnapshot) -> String {
         }
     }
     output.push_str(&format!(
-        "\n  git:      {}\n  cwd:      {}\n\nContext:\n  workspace instructions: {}\n  memory:                 {}\n  resumed session:        {}\n  policy:                 {}\n\nProvider:\n  id:       {}\n  kind:     {}\n  base_url: {}\n  auth:     {}\n\nRouting / Tradeoff:\n  route:      {}\n  privacy:    {}\n  quota/cost: {}\n  best for:   {}\n\nConfig:\n  path:     {}\n  sessions: {}\n\nPending proposal:\n  status:   {}",
+        "\n  git:      {}\n  cwd:      {}\n\nContext:\n  workspace instructions: {}\n  memory:                 {}\n  resumed session:        {}\n  policy:                 {}\n  agent memory:           {}\n\nProvider:\n  id:       {}\n  kind:     {}\n  base_url: {}\n  auth:     {}\n\nRouting / Tradeoff:\n  route:      {}\n  privacy:    {}\n  quota/cost: {}\n  best for:   {}\n\nConfig:\n  path:     {}\n  sessions: {}\n\nPending proposal:\n  status:   {}",
         status.git_state,
         status.cwd,
         format_workspace_instructions_status(status),
@@ -1461,6 +1468,7 @@ pub(super) fn format_tui_status(status: &StatusSnapshot) -> String {
             .map(|session_id| format!("{} (background only)", redact_sensitive_text(session_id)))
             .unwrap_or_else(|| "none".to_string()),
         format_policy_status(status),
+        format_agent_memory_status(status),
         status.provider_id,
         status.provider_kind,
         status.base_url,
@@ -1550,6 +1558,18 @@ pub(super) fn format_policy_status(status: &StatusSnapshot) -> String {
         parts.push(format!("user {} rules", status.policy_user_rules));
     }
     parts.join(" · ")
+}
+
+/// agent memory(N1)の /status 1行(on/off と件数のみ)。
+pub(super) fn format_agent_memory_status(status: &StatusSnapshot) -> String {
+    if !status.agent_memory_enabled {
+        return "off — /memory enable to let origin keep notes".to_string();
+    }
+    match status.agent_memory_entries {
+        0 => "on — no notes yet (/memory remember <text>)".to_string(),
+        1 => "on — 1 note".to_string(),
+        count => format!("on — {count} notes"),
+    }
 }
 
 /// 今の状態から「次に何をすればいいか」を1行で選ぶ。

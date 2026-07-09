@@ -73,6 +73,7 @@ origin-agent の TUI がどう「見え」「話し」「待つ」かの標準�
 - 効果を1文で先に言う: `This will create one file.` + `No other files will be changed.`
 - `apply` / `check` / `diff` / `patch` / `proposal` という git 植えの語彙は fallback / advanced / debug 面(`/diff` `/check` `/apply`、blocked 詳細、`? more actions` の `d diff` / `r revise`)にだけ許す。normal path に漏らさない。
 - エラー・不能の型: `Reason: {redact 済み理由}` + 変化がないことの明言 + `Next: {次の一手}`。
+- memory の通知は `memory saved: [id] text` / `memory forgotten: [id] text` / `memory undone: [id] text` / `Not saved: {理由}` に固定する。refusal は常に理由つき・store は無傷であることが読み取れる文にする。
 - `policy` の語は origin の固定文にだけ現れる(`denied by workspace policy (.origin/policy.toml): <path>` の形で必ず source ファイル名を含める)。モデルの拒否文と混同させない。deny パターン一覧は画面にも prompt にも出さない。
 
 ## 6. Ask / Agent の声(mode の文体)

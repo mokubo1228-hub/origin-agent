@@ -118,6 +118,11 @@ pub(super) const TUI_SLASH_COMMANDS: &[SlashCommandSuggestion] = &[
         edit_loop: false,
     },
     SlashCommandSuggestion {
+        command: "/memory",
+        description: "notes origin remembers across sessions",
+        edit_loop: false,
+    },
+    SlashCommandSuggestion {
         command: "/exit",
         description: "quit TUI",
         edit_loop: false,
@@ -340,6 +345,19 @@ pub(super) fn parse_tui_command(input: &str) -> TuiSubmit {
         ["/compact", ..] => TuiSubmit::Command(TuiCommand::Error(
             "Usage: /compact\nSummarizes the current conversation context into a compact form. Files are never changed."
                 .to_string(),
+        )),
+        ["/memory"] => TuiSubmit::Command(TuiCommand::Memory(TuiMemoryAction::Status)),
+        ["/memory", "enable"] => TuiSubmit::Command(TuiCommand::Memory(TuiMemoryAction::Enable)),
+        ["/memory", "disable"] => TuiSubmit::Command(TuiCommand::Memory(TuiMemoryAction::Disable)),
+        ["/memory", "undo"] => TuiSubmit::Command(TuiCommand::Memory(TuiMemoryAction::Undo)),
+        ["/memory", "remember", rest @ ..] if !rest.is_empty() => TuiSubmit::Command(
+            TuiCommand::Memory(TuiMemoryAction::Remember(rest.join(" "))),
+        ),
+        ["/memory", "forget", id] => TuiSubmit::Command(TuiCommand::Memory(
+            TuiMemoryAction::Forget((*id).to_string()),
+        )),
+        ["/memory", ..] => TuiSubmit::Command(TuiCommand::Error(
+            "Usage: /memory [enable|disable|remember <text>|forget <id>|undo]\nShows or edits the notes origin remembers across sessions. Notes live in ~/.origin/memory/ and are never written without your explicit command.".to_string(),
         )),
         ["/resume"] => TuiSubmit::Command(TuiCommand::ResumePicker),
         ["/resume", target] => TuiSubmit::Command(TuiCommand::Resume {

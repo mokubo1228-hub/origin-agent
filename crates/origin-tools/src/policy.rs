@@ -54,6 +54,8 @@ pub struct PolicySet {
     pub write_deny: Vec<PolicyRule>,
     pub workspace_rules: usize,
     pub user_rules: usize,
+    /// `[memory] never_store` の追加パターン(P2)。glob ではなく大文字小文字無視の部分一致。
+    pub memory_never_store: Vec<String>,
     /// parse 失敗・無効パターンの警告(表示用)。空でなければ /status と起動時に見せる。
     pub warnings: Vec<String>,
 }
@@ -179,6 +181,23 @@ fn load_policy_file(path: &Path, source: PolicySource, label: &str, set: &mut Po
             return;
         }
     };
+
+    if let Some(list) = value
+        .get("memory")
+        .and_then(|table| table.get("never_store"))
+        .and_then(|deny| deny.as_array())
+    {
+        for entry in list {
+            match entry.as_str() {
+                Some(pattern) if !pattern.trim().is_empty() => {
+                    set.memory_never_store.push(pattern.trim().to_string());
+                }
+                _ => set.warnings.push(format!(
+                    "{label}: non-string pattern in [memory] was ignored"
+                )),
+            }
+        }
+    }
 
     let mut added = 0usize;
     for (section, bucket) in [("read", 0usize), ("write", 1usize)] {
@@ -433,5 +452,20 @@ mod tests {
         assert!(reason.contains("docs/archive/x.md"));
         assert!(!reason.contains("**"));
         assert!(set.write_denial_reason("README.md").is_none());
+    }
+
+    #[test]
+    fn policy_memory_never_store_patterns_load() {
+        let workspace = temp_dir("memory-never-store");
+        write_workspace_policy(
+            &workspace,
+            "[memory]\nnever_store=[\"社外秘\", \"internal-codename\"]\n",
+        );
+        let set = load_policy(&workspace, None);
+        assert_eq!(
+            set.memory_never_store,
+            vec!["社外秘".to_string(), "internal-codename".to_string()]
+        );
+        assert!(set.warnings.is_empty());
     }
 }

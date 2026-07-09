@@ -72,6 +72,8 @@ pub(super) struct TuiState {
     pub(super) selection_buffer: String,
     pub(super) workspace_instructions: WorkspaceInstructions,
     pub(super) user_memory: UserMemory,
+    /// agent memory(N1)の現在 snapshot(store は `~/.origin/memory/`)。
+    pub(super) agent_memory: origin_session::memory::MemorySnapshot,
     pub(super) resumed_session: Option<TuiResumedSession>,
 }
 
@@ -427,6 +429,17 @@ pub(super) struct TuiAgentPlanSubmit {
     pub(super) background: Option<String>,
 }
 
+/// /memory のサブコマンド(N1)。書き込みは全てユーザーの明示操作(M-2)。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum TuiMemoryAction {
+    Status,
+    Enable,
+    Disable,
+    Remember(String),
+    Forget(String),
+    Undo,
+}
+
 /// slash command を表す内部表現。handle_tui_command がこれを実行に落とす。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum TuiCommand {
@@ -443,6 +456,7 @@ pub(super) enum TuiCommand {
     Sessions,
     ResumePicker,
     Compact,
+    Memory(TuiMemoryAction),
     Resume {
         target: Option<String>,
     },

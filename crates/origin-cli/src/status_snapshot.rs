@@ -29,6 +29,9 @@ pub(crate) struct StatusSnapshot {
     pub(crate) policy_workspace_rules: usize,
     pub(crate) policy_user_rules: usize,
     pub(crate) policy_warning: Option<String>,
+    /// agent memory(N1)の要約(on/off と件数のみ)。
+    pub(crate) agent_memory_enabled: bool,
+    pub(crate) agent_memory_entries: usize,
     pub(crate) pending: PendingProposalSnapshot,
 }
 
@@ -72,6 +75,8 @@ impl StatusSnapshot {
             &UserMemory::None,
             "",
             None,
+            false,
+            0,
         )
     }
 
@@ -84,6 +89,8 @@ impl StatusSnapshot {
         user_memory: &UserMemory,
         interaction_mode_label: &str,
         resumed_session: Option<String>,
+        agent_memory_enabled: bool,
+        agent_memory_entries: usize,
     ) -> Self {
         Self {
             mode: "interactive".to_string(),
@@ -109,6 +116,8 @@ impl StatusSnapshot {
                 Some(interaction_mode_label.to_string())
             },
             resumed_session,
+            agent_memory_enabled,
+            agent_memory_entries,
             policy_workspace_rules: runtime.policy.workspace_rules,
             policy_user_rules: runtime.policy.user_rules,
             policy_warning: runtime.policy.warnings.first().cloned(),

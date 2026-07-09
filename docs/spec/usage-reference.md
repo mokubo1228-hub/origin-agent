@@ -568,6 +568,24 @@ Safety behavior:
 - Retry still runs target validation, integrity validation, and `git apply --check`.
 - Retry does not bypass human approval.
 
+## Agent memory (`/memory`)
+
+origin can keep short cross-session notes in a structured store, fully under your control:
+
+```text
+~/.origin/memory/
+  enabled            # opt-in marker (/memory enable)
+  preferences.md     # the notes: "- [id] text", 1,500 chars total, 200 per note
+  ignored.md         # tombstones for forgotten notes
+  observations.jsonl # operation journal (ids and sizes only — never note text)
+  never-store.txt    # your additional never-store patterns (one per line)
+```
+
+- **Off by default.** `/memory enable` turns it on; `/memory disable` stops reading/writing but keeps the store. This is separate from `~/.origin/memory.md` (your hand-written memory), which origin still never writes.
+- **You are the only writer.** `/memory remember <text>` is the sole write path — the model cannot write memory and nothing is learned automatically. `/memory forget <id>` removes a note (tombstoned), `/memory undo` takes back the last save, `/memory` lists everything with ids.
+- **Always-on validator**: secret-like text, never-store patterns (built-in + `never-store.txt` + policy `[memory] never_store`), duplicates, over-length, and a full store are refused with the reason shown.
+- When enabled and non-empty, notes are injected as a read-only `agent_memory` block, appear as `notes N` in the context tray, and show in `/status` as `agent memory: on — N notes`. Transcripts record metadata only (path/bytes/sha256), never the note text.
+
 ## Policy (deny rules)
 
 origin reads two optional deny-only policy files and merges them as a union:
@@ -593,6 +611,8 @@ Semantics:
 - **Read deny** is enforced before any file body is read: mentioned files are skipped with a visible policy diagnostic, and denied paths never appear in the bounded workspace overview.
 - **Privacy**: deny pattern lists are never sent to the provider and never written to transcripts; only a denied path itself can appear in a diagnostic. `/status` and `origin status` show only rule counts (`policy: workspace 2 rules · user 1 rule`, `none`, or `ignored (reason)`).
 - A malformed policy file is ignored **loudly**: a startup warning is shown and `/status` reports `ignored (...)` — deny rules from that file are not active until it parses.
+- `[memory] never_store = ["pattern", ...]` adds case-insensitive substring patterns that agent memory refuses to save (merged with `~/.origin/memory/never-store.txt`).
+- When any deny rules are active, the provider receives one generic `<workspace_policy>` notice (no patterns, no counts) so the model can explain refusals.
 
 ## Sessions
 

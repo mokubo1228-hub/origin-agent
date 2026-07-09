@@ -10,6 +10,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod memory;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionMetadata {
     pub id: String,
