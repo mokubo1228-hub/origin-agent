@@ -703,7 +703,7 @@ Shipped in `v1.4.0` (was the confirmed post-v1.3 sequencing):
 
 Post-v1.4 direction:
 
-* implemented (unreleased; see `## Unreleased` in `CHANGELOG.md`) — Ask/Agent mode contract lines plus `/mode` switch recording into the in-session conversation context; `~/.origin/memory.md` read-only user memory (origin never writes it; metadata-only transcript); TUI lightweight `/resume [latest|<session-id>]` (bounded read-only background, no state restoration); `/status` daily information design (Now / Context / diagnostics / Privacy / Next); TUI wording/visual-grammar unification; and `docs/design/design.md` as the experience standard.
+* released as `v1.5.0` (2026-07-09) — Ask/Agent mode contract lines plus `/mode` switch recording into the in-session conversation context; `~/.origin/memory.md` read-only user memory (origin never writes it; metadata-only transcript); the `/resume` resume picker and lightweight resume (bounded read-only background, no state restoration); the one-line context tray; manual `/compact` conversation compaction; `/status` daily information design (Now / Context / diagnostics / Privacy / Next); TUI wording/visual-grammar unification; and `docs/design/design.md` as the experience standard.
 * future backlog (direction only, not scheduled) — an agent-written memory path (which would need its own explicit approval gate) and a richer sessions viewer; no committed next phase until the product owner decides.
 * deferred — the Agent / Proposal input-model unification (removing instant `y` / `n`) once labeled "23.5.6".
 

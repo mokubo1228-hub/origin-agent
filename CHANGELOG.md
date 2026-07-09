@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.5.0 - 2026-07-09
 
-Post-v1.4 daily-use UX lane: mode awareness, minimal user memory, TUI lightweight resume, `/status` information design, and TUI wording/visual-grammar unification. The safety model, approval semantics, and `/diff` / `/check` / `/apply` behavior are unchanged.
+Post-v1.4 daily-use UX release: mode awareness, minimal user-owned memory, a lightweight resume picker, an always-visible context tray, manual conversation compaction, `/status` information design, and TUI wording/visual-grammar unification. The safety model, approval semantics, and `/diff` / `/check` / `/apply` behavior are unchanged.
 
 ### Ask / Agent mode awareness
 
@@ -22,6 +22,16 @@ Post-v1.4 daily-use UX lane: mode awareness, minimal user memory, TUI lightweigh
 - `/resume` (no arguments) opens a resume picker over the most recent saved sessions (up to 7, newest first; two lines per candidate: number + relative time + first prompt, then a dim kind · result · model line). It uses the same interaction grammar as `/models` (Up/Down, number buffer, Backspace, Enter, Esc, cyan accent selection, no literal marker) and has no preview, search, or filter. `Enter` feeds the existing lightweight resume path; highlighting and `Esc` change nothing. With no saved sessions the picker does not open (`No saved sessions yet.`), an unreadable transcript is listed in place as `(unreadable session)`, and the picker is refused while a proposal review, apply approval, or Agent plan is pending. `/sessions` stays the advanced/history command.
 - `/resume latest` and `/resume <session-id>` still load immediately: they load a bounded (4,000-char), redacted, read-only summary of one saved session and attach it to subsequent provider requests as background context, reusing the CLI `--resume` machinery.
 - Nothing is restored: no proposal, no diffs, no files, no provider call at picker open/highlight/cancel or at resume time. `/status` shows the resumed session id, the next chat transcript records `resumed_from`, and `/clear` drops the background. Advanced resume remains out of scope.
+
+### Context tray
+
+- A one-line dim context tray now sits directly above the composer whenever persistent read-only context is active: `context: ORIGIN.md · memory · resumed · history 4`. Tokens appear only for context that is actually injected into the next request (loaded ORIGIN.md, loaded user memory, a resumed session, bounded in-session history with its count), in the same order as the `/status` Context section.
+- The tray is display-only and low-density: fixed words plus counts, never file bodies, paths, session ids, or secrets. It takes no keyboard input, adds no commands or state, disappears when empty, and is hidden while a write permission gate (Proposal review / apply approval) is on screen. Per-request context (mentioned files, workspace overview) is intentionally not shown — the tray only claims what will persist into the next request.
+
+### Context compaction
+
+- A new advanced `/compact` command condenses the bounded in-session conversation context: the current model summarizes it once, and the context is replaced by one redacted, bounded (1,200-char) `summary` entry plus the two most recent original entries. Compaction runs in a background worker with a `Compacting conversation` panel and can be interrupted with `Esc`/`Ctrl+C`; on failure, interruption, or a stale result the context is left untouched (all-or-nothing).
+- `/compact` is manual only and refuses to start while a request, review, approval, or picker is active, or when the context is empty or already small. It never touches files, transcripts on disk, or approval state; the compact transcript records only a fixed size marker plus the model summary — never the conversation body itself.
 
 ### /status information design
 

@@ -11,7 +11,7 @@ UX — kept deliberately small, controllable, and human-approved.
 
 ![origin-agent startup landing](docs/assets/landing.png)
 
-> **Latest release: v1.4.0** · full history in [`CHANGELOG.md`](CHANGELOG.md).
+> **Latest release: v1.5.0** · full history in [`CHANGELOG.md`](CHANGELOG.md).
 > Not a replacement for Claude Code or Codex — those stay the right tools for broad,
 > fast, multi-file implementation work. `origin-agent` is the smaller, controllable
 > alternative for file-scoped, human-approved edits with the model and provider *you* choose.
@@ -40,10 +40,11 @@ read as much as used — 6 focused crates, `unsafe` forbidden, and a 500+ test s
   `git apply --check`–passed patch.
 - **A real TUI workbench** — Ask / Agent modes, a left-rail visual grammar, an attached
   slash-command palette, Japanese / full-width-aware input, and a block-art startup landing.
-- **Explicit context, never implicit** — `ORIGIN.md` (workspace instructions),
-  `~/.origin/memory.md` (user-owned memory that origin reads but never writes), and
-  `/resume` for read-only background from a past session. All bounded, with
-  metadata-only transcripts.
+- **Explicit context, always visible** — `ORIGIN.md` (workspace instructions),
+  `~/.origin/memory.md` (user-owned memory that origin reads but never writes),
+  a `/resume` picker for read-only background from a past session, a one-line
+  context tray above the composer, and `/compact` conversation compaction.
+  All bounded, with metadata-only transcripts.
 - **Built in Rust to be read** — separated provider / config / protocol / session /
   safety crates, `unsafe_code = "forbid"`, and 500+ tests.
 

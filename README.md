@@ -11,7 +11,7 @@ aider 的なモデル/プロバイダの自由度と、Codex / Gemini CLI のよ
 
 ![origin-agent 起動画面](docs/assets/landing.png)
 
-> **最新リリース: v1.4.0** · 履歴は [`CHANGELOG.md`](CHANGELOG.md)。
+> **最新リリース: v1.5.0** · 履歴は [`CHANGELOG.md`](CHANGELOG.md)。
 > Claude Code / Codex の置き換えではない — 広範・高速・多ファイルの実装はそちらが適任。
 > `origin-agent` は、自分で選んだモデルとプロバイダで「ファイル単位・人間承認つき」に
 > 編集するための、小さく制御可能な選択肢。
@@ -41,10 +41,11 @@ aider のモデル自由度、Codex / Gemini CLI のターミナルネイティ�
 - **本物の TUI ワークベンチ** — Ask / Agent モード、左 rail のビジュアル文法、
   追従するスラッシュコマンドパレット、日本語/全角対応の入力、ブロックアートの
   起動画面。
-- **文脈は明示的に** — `ORIGIN.md`(ワークスペース指示)と `~/.origin/memory.md`
-  (ユーザー所有のメモリ。origin は読むだけで書かない)、`/resume` による過去
-  セッションの read-only 背景。すべて上限付きで、transcript には metadata しか
-  残さない。
+- **文脈は明示的に、そして見える** — `ORIGIN.md`(ワークスペース指示)と
+  `~/.origin/memory.md`(ユーザー所有のメモリ。origin は読むだけで書かない)、
+  `/resume` picker による過去セッションの read-only 背景、composer 直上の
+  context tray(いま何が文脈かの常時1行表示)、`/compact` による会話圧縮。
+  すべて上限付きで、transcript には metadata しか残さない。
 - **読まれる前提の Rust** — provider / config / protocol / session / safety を分離
   した crate 構成、`unsafe_code = "forbid"`、500+ テスト。
 
